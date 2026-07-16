@@ -1,0 +1,20 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/briefing-lunes",
+      "schedule": "0 7 * * 1"
+    },
+    {
+      "path": "/api/cron/cleanup-rejections",
+      "schedule": "0 9 * * 1"
+    },
+    {
+      "path": "/api/cron/run-aggregator",
+      "schedule": "0 10 * * 1"
+    }
+  ],
+  "framework": "nextjs",
+  "buildCommand": "npm run build",
+  "installCommand": "npm install",
+  "outputDirectory": ".next"
+}
