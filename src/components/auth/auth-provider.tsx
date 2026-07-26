@@ -1,21 +1,5 @@
 'use client'
 
-/**
- * AuthProvider — Autoridad Seguros AI™
- *
- * ARCHITECTURE DECISION: Single provider at the root, not per-component fetching.
- *
- * Why this matters at scale:
- *   - Without this: every Client Component that needs the user calls
- *     supabase.auth.getUser() independently. At 100k users with 8 components
- *     per page = 800k redundant calls per page load.
- *   - With this: ONE call at the root, distributed to all children via Context.
- *
- * Session refresh: The Supabase SSR client handles token refresh automatically
- * via cookies. This provider handles the CLIENT-SIDE state synchronization,
- * listening to onAuthStateChange to keep the UI in sync when the token refreshes.
- */
-
 import {
   createContext,
   useContext,
@@ -27,8 +11,6 @@ import {
 import type { User, Session } from '@supabase/supabase-js'
 import { createClient } from '@/lib/supabase/client'
 import type { Profile, BrandKit, PlanTier } from '@/types/database'
-
-// ─── Context shape ────────────────────────────────────────────────────────────
 
 interface AuthContextValue {
   user: User | null
@@ -42,15 +24,8 @@ interface AuthContextValue {
 
 const AuthContext = createContext<AuthContextValue | null>(null)
 
-// ─── Provider ─────────────────────────────────────────────────────────────────
-
 interface AuthProviderProps {
   children: ReactNode
-  /**
-   * Initial session from the Server Component.
-   * Passing this eliminates the client-side loading flash —
-   * the provider starts with the correct state immediately.
-   */
   initialSession: Session | null
 }
 
@@ -60,52 +35,53 @@ export function AuthProvider({ children, initialSession }: AuthProviderProps) {
   const [user, setUser] = useState<User | null>(initialSession?.user ?? null)
   const [profile, setProfile] = useState<Profile | null>(null)
   const [brandKit, setBrandKit] = useState<BrandKit | null>(null)
-  const [isLoading, setIsLoading] = useState(!initialSession)
+  // If we have an initial session from the server, start as NOT loading
+  // to prevent flash. If no session, also not loading — just unauthenticated.
+  const [isLoading, setIsLoading] = useState(false)
 
-  // Load profile and brand kit for a given user
   const loadUserData = async (userId: string) => {
-    const [profileResult, brandKitResult] = await Promise.all([
-      supabase.from('profiles').select('*').eq('id', userId).single(),
-      supabase.from('brand_kits').select('*').eq('user_id', userId).single(),
-    ])
-
-    setProfile(profileResult.data)
-    setBrandKit(brandKitResult.data)
+    try {
+      const [profileResult, brandKitResult] = await Promise.all([
+        supabase.from('profiles').select('*').eq('id', userId).single(),
+        supabase.from('brand_kits').select('*').eq('user_id', userId).single(),
+      ])
+      setProfile(profileResult.data)
+      setBrandKit(brandKitResult.data)
+    } catch {
+      // Non-critical — profile may not exist yet during onboarding
+    }
   }
 
-  // Public method to manually refresh profile (e.g., after onboarding step save)
   const refreshProfile = async () => {
     if (!user) return
     await loadUserData(user.id)
   }
 
-  // Initial load from server-provided session
+  // Load profile data for initial server session
   useEffect(() => {
     if (initialSession?.user) {
-      setIsLoading(true)
-      loadUserData(initialSession.user.id).finally(() => setIsLoading(false))
-    } else {
-      setIsLoading(false)
+      void loadUserData(initialSession.user.id)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Subscribe to auth state changes (token refresh, logout from another tab, etc.)
+  // Listen for auth state changes (sign in, sign out, token refresh)
   useEffect(() => {
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(async (_event, session) => {
-      setUser(session?.user ?? null)
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      async (_event, session) => {
+        const newUser = session?.user ?? null
+        setUser(newUser)
 
-      if (session?.user) {
-        await loadUserData(session.user.id)
-      } else {
-        setProfile(null)
-        setBrandKit(null)
+        if (newUser) {
+          await loadUserData(newUser.id)
+        } else {
+          setProfile(null)
+          setBrandKit(null)
+        }
+
+        setIsLoading(false)
       }
-
-      setIsLoading(false)
-    })
+    )
 
     return () => subscription.unsubscribe()
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -125,28 +101,38 @@ export function AuthProvider({ children, initialSession }: AuthProviderProps) {
     [user, profile, brandKit, isLoading]
   )
 
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
-}
-
-// ─── Hook ─────────────────────────────────────────────────────────────────────
-
-/**
- * useAuth — access session state in any Client Component.
- *
- * Example:
- *   const { user, profile, planTier } = useAuth()
- *
- * Throws if used outside AuthProvider — fail fast, not silently.
- */
-export function useAuth(): AuthContextValue {
-  const context = useContext(AuthContext)
-
-  if (!context) {
-    throw new Error(
-      'useAuth() must be used inside <AuthProvider>. ' +
-        'Make sure your component tree includes AuthProvider at the root.'
+  // Show a minimal loading state instead of blank screen
+  if (isLoading) {
+    return (
+      <AuthContext.Provider value={value}>
+        <div style={{
+          minHeight: '100vh',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          background: '#f9fafb',
+        }}>
+          <div style={{
+            width: 32,
+            height: 32,
+            border: '3px solid #e5e7eb',
+            borderTopColor: '#1B2E6B',
+            borderRadius: '50%',
+            animation: 'spin 0.8s linear infinite',
+          }} />
+          <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
+        </div>
+      </AuthContext.Provider>
     )
   }
 
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>
+}
+
+export function useAuth(): AuthContextValue {
+  const context = useContext(AuthContext)
+  if (!context) {
+    throw new Error('useAuth() must be used inside <AuthProvider>.')
+  }
   return context
 }

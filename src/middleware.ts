@@ -1,24 +1,23 @@
 /**
  * Autoridad Seguros AI™ — Route Protection Middleware
  *
- * Runs on every request BEFORE the page renders.
- * Responsibilities:
- *   1. Refresh the Supabase session (keep cookies fresh)
- *   2. Redirect unauthenticated users from protected routes to /login
- *   3. Redirect authenticated users away from auth pages to /dashboard
- *   4. Redirect users with incomplete onboarding to /onboarding
- *
- * This is the security perimeter of the entire app.
+ * Fixes applied (Phase 17 staging):
+ *   1. Checks BOTH onboarding_done AND onboarding_completed (migration 008 compat)
+ *   2. Matcher explicitly excludes /api/* to prevent interference with auth callbacks
+ *   3. /onboarding excluded from PROTECTED_ROUTES (has its own auth check in page)
+ *   4. Strict equality on AUTH_ROUTES to prevent over-matching
  */
 
 import { createServerClient } from '@supabase/ssr'
 import { type NextRequest, NextResponse } from 'next/server'
 
-// Routes that require authentication
-const PROTECTED_ROUTES = ['/dashboard', '/onboarding']
+// Routes that require a valid session
+const PROTECTED_PREFIXES = ['/dashboard', '/brand-builder', '/content-studio',
+  '/marketing-copilot', '/objection-ai', '/performance', '/settings',
+  '/contenidos', '/precios']
 
-// Routes that should redirect authenticated users away
-const AUTH_ROUTES = ['/login', '/register', '/verify', '/reset-password']
+// Auth pages — redirect away if already logged in
+const AUTH_EXACT = new Set(['/login', '/register'])
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
@@ -32,7 +31,6 @@ export async function middleware(request: NextRequest) {
           return request.cookies.getAll()
         },
         setAll(cookiesToSet) {
-          // Sync cookies to both the request and the response
           cookiesToSet.forEach(({ name, value }) =>
             request.cookies.set(name, value)
           )
@@ -45,42 +43,52 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // Refresh session — this is the critical call that keeps auth alive
-  // Do NOT remove getUser() here — it refreshes the session token
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
+  // CRITICAL: getUser() refreshes the session token via cookies.
+  // Never skip this call — it keeps the session alive.
+  const { data: { user } } = await supabase.auth.getUser()
 
   const { pathname } = request.nextUrl
 
-  // ── Rule 1: Protect dashboard and onboarding routes ──────────────────────
-  const isProtectedRoute = PROTECTED_ROUTES.some((route) =>
-    pathname.startsWith(route)
-  )
+  // ── Rule 1: Protected routes require session ───────────────────────────────
+  const isProtected = PROTECTED_PREFIXES.some(p => pathname.startsWith(p))
 
-  if (isProtectedRoute && !user) {
-    const redirectUrl = new URL('/login', request.url)
-    redirectUrl.searchParams.set('redirectTo', pathname)
-    return NextResponse.redirect(redirectUrl)
+  if (isProtected && !user) {
+    const url = new URL('/login', request.url)
+    url.searchParams.set('redirectTo', pathname)
+    const res = NextResponse.redirect(url)
+    // Copy cookies so session refresh is not lost
+    supabaseResponse.cookies.getAll().forEach(cookie => {
+      res.cookies.set(cookie.name, cookie.value)
+    })
+    return res
   }
 
-  // ── Rule 2: Redirect authenticated users away from auth pages ────────────
-  const isAuthRoute = AUTH_ROUTES.some((route) => pathname === route)
-
-  if (isAuthRoute && user) {
-    return NextResponse.redirect(new URL('/dashboard', request.url))
+  // ── Rule 2: Auth pages redirect logged-in users to dashboard ──────────────
+  if (AUTH_EXACT.has(pathname) && user) {
+    const res = NextResponse.redirect(new URL('/dashboard', request.url))
+    supabaseResponse.cookies.getAll().forEach(cookie => {
+      res.cookies.set(cookie.name, cookie.value)
+    })
+    return res
   }
 
-  // ── Rule 3: Check onboarding completion ──────────────────────────────────
-  if (user && pathname.startsWith('/dashboard')) {
+  // ── Rule 3: Dashboard → check onboarding (supports both flag names) ────────
+  if (user && pathname === '/dashboard') {
     const { data: profile } = await supabase
       .from('profiles')
-      .select('onboarding_done')
+      .select('onboarding_done, onboarding_completed')
       .eq('id', user.id)
       .single()
 
-    if (profile && !profile.onboarding_done) {
-      return NextResponse.redirect(new URL('/onboarding', request.url))
+    // Accept either flag — migration 008 added onboarding_completed
+    const isComplete = profile?.onboarding_completed || profile?.onboarding_done
+
+    if (profile && !isComplete) {
+      const res = NextResponse.redirect(new URL('/onboarding', request.url))
+      supabaseResponse.cookies.getAll().forEach(cookie => {
+        res.cookies.set(cookie.name, cookie.value)
+      })
+      return res
     }
   }
 
@@ -90,13 +98,12 @@ export async function middleware(request: NextRequest) {
 export const config = {
   matcher: [
     /*
-     * Run middleware on all routes EXCEPT:
-     * - _next/static (static files)
-     * - _next/image (image optimization)
-     * - favicon.ico
-     * - Public assets
-     * - API routes (they handle their own auth)
+     * Match all routes EXCEPT:
+     * - _next/static, _next/image (Next.js internals)
+     * - favicon.ico, public assets
+     * - /api/* (API routes handle their own auth)
+     * - /auth/* (Supabase auth callback routes)
      */
-    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon\\.ico|api/|auth/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }
