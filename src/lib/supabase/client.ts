@@ -1,25 +1,32 @@
 /**
- * Supabase Browser Client
+ * Supabase Browser Client — Singleton
  *
- * Used in Client Components ('use client') and hooks.
- * Uses the ANON key — all queries are subject to Row Level Security (RLS).
+ * Module-level singleton prevents multiple GoTrue instances competing
+ * with each other and firing duplicate onAuthStateChange events.
  *
- * Singleton pattern: one instance per browser tab to prevent multiple
- * GoTrue auth state listeners competing with each other.
+ * This is the ONLY place that creates a browser Supabase client.
  */
 
 import { createBrowserClient } from '@supabase/ssr'
 import type { Database } from '@/types/database'
 
-// Module-level singleton — safe in browser context (one tab = one instance)
-let _client: ReturnType<typeof createBrowserClient<Database>> | null = null
+let _instance: ReturnType<typeof createBrowserClient<Database>> | null = null
 
 export function createClient() {
-  if (!_client) {
-    _client = createBrowserClient<Database>(
+  if (typeof window === 'undefined') {
+    // SSR context — create fresh instance (server has no module cache issue)
+    return createBrowserClient<Database>(
       process.env.NEXT_PUBLIC_SUPABASE_URL!,
       process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
     )
   }
-  return _client
+
+  // Browser context — reuse singleton
+  if (!_instance) {
+    _instance = createBrowserClient<Database>(
+      process.env.NEXT_PUBLIC_SUPABASE_URL!,
+      process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!
+    )
+  }
+  return _instance
 }
