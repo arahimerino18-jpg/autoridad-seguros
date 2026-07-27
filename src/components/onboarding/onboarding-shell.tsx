@@ -305,7 +305,10 @@ function Step3Interview({
 
         <div className="flex flex-col gap-3">
           <button
-            onClick={() => setShowInterview(true)}
+            onClick={() => {
+              console.log('[Step3Interview] button clicked, sessionId=', JSON.stringify(sessionId), 'truthy=', !!sessionId)
+              setShowInterview(true)
+            }}
             className="w-full py-3.5 rounded-xl bg-[#1B2E6B] text-white font-semibold hover:bg-[#16255a] transition-colors"
           >
             🎙️ Comenzar entrevista ahora
@@ -325,6 +328,9 @@ function Step3Interview({
       </div>
     )
   }
+
+  // CLIENT-SIDE DIAGNOSTIC: visible in browser Console
+  console.log('[Step3Interview] showInterview=true, sessionId=', JSON.stringify(sessionId), 'type=', typeof sessionId, 'truthy=', !!sessionId)
 
   return (
     <div className="space-y-4">

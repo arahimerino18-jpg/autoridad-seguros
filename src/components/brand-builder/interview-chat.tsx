@@ -194,16 +194,22 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
   // Timeout: cleared in success (via finally in startInterview), in error (same),
   //   and on component unmount (cleanup return).
   useEffect(() => {
-    if (!initialSessionId) return
+    console.log('[InterviewChat] useEffect fired, initialSessionId=', JSON.stringify(initialSessionId), 'truthy=', !!initialSessionId)
+    if (!initialSessionId) {
+      console.error('[InterviewChat] BLOCKED: initialSessionId is empty/null — fetch will NOT run')
+      return
+    }
 
+    console.log('[InterviewChat] calling startInterview with:', initialSessionId)
     let cancelled = false
     const timeoutId = setTimeout(() => {
       if (!cancelled) {
-        console.error('[InterviewChat] startInterview exceeded 15s. Check /api/ai/interview.')
+        console.error('[InterviewChat] startInterview exceeded 15s — no response from /api/ai/interview')
       }
     }, 15_000)
 
     void startInterview(initialSessionId).finally(() => {
+      console.log('[InterviewChat] startInterview settled')
       if (!cancelled) clearTimeout(timeoutId)
     })
 

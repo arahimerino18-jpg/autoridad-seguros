@@ -96,6 +96,7 @@ export function useInterview(): UseInterviewReturn {
       abortRef.current = controller
       previousController?.abort()
 
+      console.log('[useInterview] fetch starting → POST /api/ai/interview, sid=', sid)
       const response = await fetch('/api/ai/interview', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -171,6 +172,7 @@ export function useInterview(): UseInterviewReturn {
   // so startInterview is also created once and never recreated.
 
   const startInterview = useCallback(async (sid: string) => {
+    console.log('[useInterview] startInterview called, sid=', JSON.stringify(sid))
     setSessionId(sid)
     sessionIdRef.current = sid
     setPhase('conversation')
@@ -180,7 +182,9 @@ export function useInterview(): UseInterviewReturn {
     setError(null)
 
     try {
+      console.log('[useInterview] calling streamRequest...')
       const { fullText, metadata: newMeta } = await streamRequest([], 'message', sid)
+      console.log('[useInterview] streamRequest resolved, fullText length=', fullText?.length)
 
       const assistantMsg: InterviewMessage = {
         role: 'assistant',
@@ -194,13 +198,16 @@ export function useInterview(): UseInterviewReturn {
       metadataRef.current = newMeta
       setCurrentStreamText('')
     } catch (err) {
-      // AbortError means a newer request superseded this one — not a real error
-      if (err instanceof Error && err.name === 'AbortError') return
+      if (err instanceof Error && err.name === 'AbortError') {
+        console.log('[useInterview] AbortError — request was superseded')
+        return
+      }
       const msg = err instanceof Error ? err.message : 'Error al iniciar la entrevista'
-      console.error('[Interview] startInterview failed:', msg, err)
+      console.error('[useInterview] startInterview FAILED:', msg, err)
       setError(msg)
       setPhase('idle')
     } finally {
+      console.log('[useInterview] startInterview finally block')
       setIsWaiting(false)
       isWaitingRef.current = false
     }
