@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { useRouter } from 'next/navigation'
 import {
   onboardingStep1,
@@ -12,6 +12,7 @@ import {
 } from '@/lib/onboarding/actions'
 import { InterviewChat } from '@/components/brand-builder/interview-chat'
 import { createInterviewSessionAction } from '@/lib/brand-builder/actions'
+import type { InterviewSessionData } from '@/lib/brand-builder/actions'
 import { cn } from '@/lib/utils'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -264,17 +265,18 @@ function Step2Products({
 // ─── Step 3: Interview ────────────────────────────────────────────────────────
 
 function Step3Interview({
+  sessionId,
   onComplete,
   onSkip,
 }: {
-  sessionId?: string  // kept for API compat but not used — session created on demand
+  sessionId?: string
   agentName?: string
   onComplete: (sid: string) => void
   onSkip: () => void
 }) {
   const [skipping, setSkipping] = useState(false)
-  // activeSessionId is set when the Server Action succeeds
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  // activeSession is set when the Server Action succeeds (new or restored)
+  const [activeSession, setActiveSession] = useState<InterviewSessionData | null>(null)
   const [creating, setCreating] = useState(false)
   const [createError, setCreateError] = useState<string | null>(null)
 
@@ -284,16 +286,37 @@ function Step3Interview({
     onSkip()
   }
 
+  // On mount: if we already have a sessionId from the server, load it immediately
+  useEffect(() => {
+    if (!sessionId || activeSession) return
+    console.log('[Step3Interview] server provided sessionId=', sessionId, '— loading session data')
+    void (async () => {
+      setCreating(true)
+      try {
+        const result = await createInterviewSessionAction()
+        if (result.success && result.session) {
+          console.log('[Step3Interview] session loaded, msgs=', result.session.conversacion.length)
+          setActiveSession(result.session)
+        }
+      } catch (err) {
+        console.error('[Step3Interview] auto-load failed:', err)
+      } finally {
+        setCreating(false)
+      }
+    })()
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId]) // run once when sessionId arrives from server
+
   const handleStartInterview = async () => {
     setCreating(true)
     setCreateError(null)
     try {
       const result = await createInterviewSessionAction()
-      if (!result.success || !result.sessionId) {
+      if (!result.success || !result.session) {
         setCreateError(result.error ?? 'No se pudo crear la sesión de entrevista. Intenta de nuevo.')
         return
       }
-      setActiveSessionId(result.sessionId)
+      setActiveSession(result.session)
     } catch (err) {
       setCreateError(err instanceof Error ? err.message : 'Error inesperado')
     } finally {
@@ -301,8 +324,9 @@ function Step3Interview({
     }
   }
 
-  // Show interview once we have a valid session ID
-  if (activeSessionId) {
+  // Show interview once we have a valid session
+  if (activeSession) {
+    const sid = activeSession.sessionId
     return (
       <div className="space-y-4">
         <div className="flex items-center justify-between">
@@ -316,12 +340,25 @@ function Step3Interview({
         </div>
         <div className="h-[500px]">
           <InterviewChat
-            initialSessionId={activeSessionId}
-            onComplete={(sid?: string) => {
-              void onboardingCompleteInterview(sid ?? activeSessionId).then(() => onComplete(sid ?? activeSessionId))
+            initialSessionId={sid}
+            initialSession={activeSession}
+            onComplete={(completedSid?: string) => {
+              void onboardingCompleteInterview(completedSid ?? sid).then(() => onComplete(completedSid ?? sid))
             }}
             onSkip={handleSkip}
           />
+        </div>
+      </div>
+    )
+  }
+
+  // Show loading spinner while auto-loading existing session
+  if (creating && sessionId) {
+    return (
+      <div className="flex items-center justify-center p-12">
+        <div className="text-center space-y-3">
+          <div className="w-8 h-8 border-2 border-[#1B2E6B]/20 border-t-[#1B2E6B] rounded-full animate-spin mx-auto" />
+          <p className="text-sm text-gray-500">Recuperando tu entrevista...</p>
         </div>
       </div>
     )

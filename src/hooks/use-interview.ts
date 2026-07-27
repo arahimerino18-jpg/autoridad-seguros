@@ -43,6 +43,12 @@ interface UseInterviewReturn {
   sessionId: string | null
   error: string | null
   startInterview: (sessionId: string) => Promise<void>
+  restoreInterview: (
+    sid: string,
+    msgs: InterviewMessage[],
+    temas: string[],
+    existingSummary?: SummaryData | null
+  ) => void
   sendMessage: (text: string) => Promise<void>
   generateSummary: () => Promise<void>
   setSummaryEdited: (text: string) => void
@@ -274,6 +280,37 @@ export function useInterview(): UseInterviewReturn {
     }
   }, [streamRequest]) // stable
 
+  // ─── Restore existing interview — no API call ────────────────────────────────
+  // Called when the client finds an existing session in DB.
+  // Loads messages and metadata into state without hitting the AI.
+  // If existingSummary is provided, goes directly to reviewing_summary phase.
+
+  const restoreInterview = useCallback((
+    sid: string,
+    msgs: InterviewMessage[],
+    temas: string[],
+    existingSummary?: SummaryData | null,
+  ) => {
+    console.log('[useInterview] restoreInterview sid=', sid, 'msgs=', msgs.length, 'temas=', temas.length)
+    setSessionId(sid)
+    sessionIdRef.current = sid
+    setMessages(msgs)
+    messagesRef.current = msgs
+    setMetadata({
+      temas_cubiertos: temas,
+      listo_para_resumir: temas.length >= 8,
+      extractos: {},
+    })
+
+    if (existingSummary) {
+      setSummary(existingSummary)
+      setPhase('reviewing_summary')
+    } else if (msgs.length > 0) {
+      setPhase('conversation')
+    }
+    // If msgs.length === 0: stay idle — will call startInterview normally
+  }, []) // Stable — only sets state, no closures needed
+
   // ─── Generate summary — stable ─────────────────────────────────────────────
 
   const generateSummaryInternal = useCallback(async (msgs: InterviewMessage[]) => {
@@ -343,6 +380,7 @@ export function useInterview(): UseInterviewReturn {
     sessionId,
     error,
     startInterview,
+    restoreInterview,
     sendMessage,
     generateSummary,
     setSummaryEdited,

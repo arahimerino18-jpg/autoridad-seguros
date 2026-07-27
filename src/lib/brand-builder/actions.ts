@@ -357,9 +357,16 @@ export async function saveInterviewResultAction(data: InterviewSaveData): Promis
 // Server Actions have correctly hydrated cookies in Vercel — auth.uid() works.
 // This avoids the RSC cookie propagation issue that caused sessionId = ''.
 
+export interface InterviewSessionData {
+  sessionId: string
+  conversacion: Array<{ role: string; content: string; timestamp: string }>
+  temas_cubiertos: string[]
+  status: string
+}
+
 export async function createInterviewSessionAction(): Promise<{
   success: boolean
-  sessionId?: string
+  session?: InterviewSessionData
   error?: string
 }> {
   const supabase = await createClient()
@@ -369,10 +376,10 @@ export async function createInterviewSessionAction(): Promise<{
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const client = supabase as any
 
-  // Return existing active session if one exists
+  // Return existing active session WITH full data so the client can restore it
   const { data: existing } = await client
     .from('interview_sessions')
-    .select('id')
+    .select('id, conversacion, temas_cubiertos, status')
     .eq('user_id', user.id)
     .eq('es_activa', true)
     .order('created_at', { ascending: false })
@@ -380,14 +387,26 @@ export async function createInterviewSessionAction(): Promise<{
     .maybeSingle()
 
   if (existing?.id) {
-    return { success: true, sessionId: existing.id as string }
+    console.log('[createInterviewSessionAction] found existing session:', existing.id,
+      'msgs:', (existing.conversacion as unknown[])?.length ?? 0,
+      'temas:', (existing.temas_cubiertos as string[])?.length ?? 0,
+      'status:', existing.status)
+    return {
+      success: true,
+      session: {
+        sessionId: existing.id as string,
+        conversacion: (existing.conversacion as Array<{ role: string; content: string; timestamp: string }>) ?? [],
+        temas_cubiertos: (existing.temas_cubiertos as string[]) ?? [],
+        status: existing.status as string,
+      },
+    }
   }
 
   // Create new session
   const { data: newSess, error } = await client
     .from('interview_sessions')
     .insert({ user_id: user.id, status: 'en_progreso', es_activa: true })
-    .select('id')
+    .select('id, conversacion, temas_cubiertos, status')
     .single()
 
   if (error) {
@@ -395,5 +414,52 @@ export async function createInterviewSessionAction(): Promise<{
     return { success: false, error: `Error al crear la sesión: ${error.message}` }
   }
 
-  return { success: true, sessionId: (newSess as { id: string }).id }
+  console.log('[createInterviewSessionAction] created new session:', (newSess as {id:string}).id)
+  return {
+    success: true,
+    session: {
+      sessionId: (newSess as { id: string }).id,
+      conversacion: [],
+      temas_cubiertos: [],
+      status: 'en_progreso',
+    },
+  }
+}
+
+// Saves datos_estructurados and marks session as resumen_generado
+// Called during retroactive recovery when last message contains JSON
+export async function markSessionCompleteAction(
+  sessionId: string,
+  datosEstructurados: Record<string, unknown>,
+  resumenVisible: string,
+): Promise<{ success: boolean; error?: string }> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'No autenticado' }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const { error } = await (supabase as any)
+    .from('interview_sessions')
+    .update({
+      status: 'resumen_generado',
+      datos_estructurados: datosEstructurados,
+      resumen_visible: resumenVisible,
+      temas_cubiertos: [
+        'historia_personal','motivacion_profunda','mercado_objetivo',
+        'productos_principales','diferenciadores','estilo_comunicacion',
+        'valores','cliente_ideal','objeciones_frecuentes',
+        'frases_propias','ctas_efectivos','mision_profesional','vision_negocio',
+      ],
+      score_covertura: 100,
+    })
+    .eq('id', sessionId)
+    .eq('user_id', user.id)
+
+  if (error) {
+    console.error('[markSessionCompleteAction] failed:', error.message)
+    return { success: false, error: error.message }
+  }
+
+  console.log('[markSessionCompleteAction] session marked complete:', sessionId)
+  return { success: true }
 }

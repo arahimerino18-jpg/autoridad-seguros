@@ -2,7 +2,8 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import { useInterview } from '@/hooks/use-interview'
-import { saveInterviewResultAction } from '@/lib/brand-builder/actions'
+import { saveInterviewResultAction, markSessionCompleteAction } from '@/lib/brand-builder/actions'
+import type { InterviewSessionData } from '@/lib/brand-builder/actions'
 import { Button, Alert } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/hooks/use-toast'
@@ -26,6 +27,74 @@ function renderMarkdown(text: string): React.ReactNode {
       </span>
     ))
   })
+}
+
+
+// ─── All 13 interview topics ──────────────────────────────────────────────────
+const ALL_TOPICS = [
+  'historia_personal','motivacion_profunda','mercado_objetivo',
+  'productos_principales','diferenciadores','estilo_comunicacion',
+  'valores','cliente_ideal','objeciones_frecuentes',
+  'frases_propias','ctas_efectivos','mision_profesional','vision_negocio',
+]
+
+// ─── JSON recovery helpers ────────────────────────────────────────────────────
+
+interface RecoveredSummary {
+  resumen_visible: string
+  datos_estructurados: Record<string, unknown>
+}
+
+/**
+ * Tries to extract a final structured JSON object from a message that
+ * may contain raw JSON (from the previous bug where summary leaked into chat).
+ * Returns null if the message is a normal conversational response.
+ */
+function tryExtractFinalJson(content: string): RecoveredSummary | null {
+  // Strip markdown code fences and leading/trailing text
+  const cleaned = content
+    .replace(/```json\s*/gi, '')
+    .replace(/```\s*/g, '')
+    .trim()
+
+  // Heuristic: must contain at least 3 of the expected profile keys
+  const expectedKeys = [
+    'historia_personal','motivacion_profunda','mercado_objetivo',
+    'productos_principales','estilo_comunicacion','diferenciadores',
+    'valores','objeciones_frecuentes','frases_propias','ctas_efectivos',
+  ]
+
+  const keyMatches = expectedKeys.filter(k => cleaned.includes(`"${k}"`))
+  if (keyMatches.length < 3) return null
+
+  // Try to find and parse the JSON object
+  const jsonMatch = cleaned.match(/\{[\s\S]+\}/)
+  if (!jsonMatch) return null
+
+  try {
+    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>
+    const resumenParts: string[] = []
+    if (typeof parsed.propuesta_de_valor === 'string') resumenParts.push(parsed.propuesta_de_valor)
+    if (typeof parsed.historia_personal === 'string') resumenParts.push(parsed.historia_personal)
+    const resumenVisible = resumenParts.join(' ') || 'Perfil recuperado automáticamente.'
+
+    console.log('[tryExtractFinalJson] JSON válido detectado, keys=', Object.keys(parsed).length)
+    return { resumen_visible: resumenVisible, datos_estructurados: parsed }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Strips the final JSON block from a message for display purposes.
+ */
+function stripFinalJson(content: string): string {
+  const stripped = content
+    .replace(/```json[\s\S]*?```/gi, '')
+    .replace(/<!--METADATA:.*?-->/s, '')
+    .replace(/\{[\s\S]*"historia_personal"[\s\S]*\}/s, '')
+    .trim()
+  return stripped || '✓ Entrevista completada'
 }
 
 // ─── Topic coverage indicator ─────────────────────────────────────────────────
@@ -171,11 +240,12 @@ function SummaryReview({
 
 interface InterviewChatProps {
   initialSessionId?: string
+  initialSession?: InterviewSessionData | null  // full session for restoration
   onComplete: () => void
   onSkip: () => void
 }
 
-export function InterviewChat({ initialSessionId, onComplete, onSkip }: InterviewChatProps) {
+export function InterviewChat({ initialSessionId, initialSession, onComplete, onSkip }: InterviewChatProps) {
   const [inputText, setInputText] = useState('')
   const [isSaving, setIsSaving] = useState(false)
   const messagesEndRef = useRef<HTMLDivElement>(null)
@@ -191,6 +261,7 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
     sessionId,
     error,
     startInterview,
+    restoreInterview,
     sendMessage,
     generateSummary,
     setSummaryEdited,
@@ -202,43 +273,65 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, currentStreamText])
 
-  // Start interview when component mounts with a valid session ID.
-  //
-  // Why [initialSessionId] only — no stale closure risk:
-  //   startInterview is stable (defined with useCallback([streamRequest]),
-  //   and streamRequest is stable (useCallback([])). Neither is ever recreated.
-  //   So the function reference captured here is always the correct, current one.
-  //   There is no need to list startInterview as a dep because it never changes.
-  //   Listing initialSessionId ensures the effect re-runs if a new session is
-  //   provided (e.g., session creation retried from outside), but not on every render.
-  //
-  // Timeout: cleared in success (via finally in startInterview), in error (same),
-  //   and on component unmount (cleanup return).
+  // Initialize interview on mount.
+  // Uses initialSession (full data) when available — no API call needed.
+  // Falls back to startInterview (API call) when starting fresh.
+  // All functions referenced (startInterview, restoreInterview) are stable.
   useEffect(() => {
-    console.log('[InterviewChat] useEffect fired, initialSessionId=', JSON.stringify(initialSessionId), 'truthy=', !!initialSessionId)
-    if (!initialSessionId) {
-      console.error('[InterviewChat] BLOCKED: initialSessionId is empty/null — fetch will NOT run')
+    const sid = initialSession?.sessionId ?? initialSessionId
+    if (!sid) {
+      console.log('[InterviewChat] no sessionId — waiting')
       return
     }
 
-    console.log('[InterviewChat] calling startInterview with:', initialSessionId)
+    const existingMsgs = initialSession?.conversacion ?? []
+    const existingTemas = initialSession?.temas_cubiertos ?? []
+    console.log('[InterviewChat] mount sid=', sid, 'msgs=', existingMsgs.length, 'temas=', existingTemas.length)
+
+    if (existingMsgs.length > 0) {
+      // Check if last assistant message has raw JSON (retroactive recovery)
+      const lastAssistant = [...existingMsgs].reverse().find(m => m.role === 'assistant')
+      const recovered = lastAssistant ? tryExtractFinalJson(lastAssistant.content) : null
+
+      if (recovered) {
+        console.log('[InterviewChat] JSON final detectado — recuperación retroactiva')
+        const msgs = existingMsgs.map(m => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          displayContent: m.role === 'assistant' ? stripFinalJson(m.content) : m.content,
+          timestamp: m.timestamp ?? new Date().toISOString(),
+        }))
+        void markSessionCompleteAction(sid, recovered.datos_estructurados, recovered.resumen_visible)
+          .then(r => { if (!r.success) console.error('[InterviewChat] markSessionComplete failed:', r.error) })
+        restoreInterview(sid, msgs, ALL_TOPICS, recovered)
+        return
+      }
+
+      // Normal restoration — conversation in progress
+      console.log('[InterviewChat] restaurando conversación en progreso')
+      const msgs = existingMsgs.map(m => ({
+        role: m.role as 'user' | 'assistant',
+        content: m.content,
+        displayContent: m.role === 'assistant'
+          ? m.content.replace(/<!--METADATA:.*?-->/s, '').trim()
+          : m.content,
+        timestamp: m.timestamp ?? new Date().toISOString(),
+      }))
+      restoreInterview(sid, msgs, existingTemas)
+      return
+    }
+
+    // No existing messages — call AI for first question
     let cancelled = false
     const timeoutId = setTimeout(() => {
-      if (!cancelled) {
-        console.error('[InterviewChat] startInterview exceeded 15s — no response from /api/ai/interview')
-      }
+      if (!cancelled) console.error('[InterviewChat] startInterview exceeded 15s')
     }, 15_000)
-
-    void startInterview(initialSessionId).finally(() => {
-      console.log('[InterviewChat] startInterview settled')
+    void startInterview(sid).finally(() => {
       if (!cancelled) clearTimeout(timeoutId)
     })
-
-    return () => {
-      cancelled = true
-      clearTimeout(timeoutId)
-    }
-  }, [initialSessionId, startInterview]) // startInterview is stable — this is safe
+    return () => { cancelled = true; clearTimeout(timeoutId) }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []) // Stable refs — run once on mount
 
   const handleSend = useCallback(async () => {
     if (!inputText.trim() || isWaiting) return
