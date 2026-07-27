@@ -146,12 +146,33 @@ async function handleMessage(
 
   const agentName = (profile as Record<string, unknown> | null)?.nombre_completo as string | null
 
-  // Build messages for Claude
-  const messages = conversacion.map((m) => ({
+  // Build messages for Claude — strip metadata from assistant turns
+  const mapped = (Array.isArray(conversacion) ? conversacion : []).map((m) => ({
     role: m.role as 'user' | 'assistant',
-    // Strip metadata from assistant messages before sending back to Claude
     content: m.content.replace(/<!--METADATA:.*?-->/s, '').trim(),
   }))
+
+  // Anthropic requires at least one message. When the conversation is empty
+  // (first turn), inject a system-level user trigger so Marco introduces
+  // himself and asks the first question. This message is never shown in the UI.
+  const messages: Array<{ role: 'user' | 'assistant'; content: string }> =
+    mapped.length > 0
+      ? mapped
+      : [
+          {
+            role: 'user',
+            content:
+              'Inicia la entrevista inteligente de marca. Preséntate brevemente como Marco y haz únicamente la primera pregunta.',
+          },
+        ]
+
+  // Validate — belt-and-suspenders guard before calling Anthropic
+  if (messages.length === 0) {
+    return NextResponse.json(
+      { error: 'No se puede iniciar la entrevista: messages vacío después de construcción.' },
+      { status: 400 }
+    )
+  }
 
   // If first message, inject context about the agent
   const systemWithContext = agentName
