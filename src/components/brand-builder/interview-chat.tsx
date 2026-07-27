@@ -51,36 +51,77 @@ interface RecoveredSummary {
  * Returns null if the message is a normal conversational response.
  */
 function tryExtractFinalJson(content: string): RecoveredSummary | null {
-  // Strip markdown code fences and leading/trailing text
+  if (!content || typeof content !== 'string') return null
+
+  // Strip markdown code fences
   const cleaned = content
     .replace(/```json\s*/gi, '')
     .replace(/```\s*/g, '')
     .trim()
 
-  // Heuristic: must contain at least 3 of the expected profile keys
-  const expectedKeys = [
+  // Profile keys — include aliases that Claude may use
+  const profileKeys = [
     'historia_personal','motivacion_profunda','mercado_objetivo',
     'productos_principales','estilo_comunicacion','diferenciadores',
     'valores','objeciones_frecuentes','frases_propias','ctas_efectivos',
+    'mision','vision','mision_profesional','vision_negocio',
+    'cliente_ideal','cliente_ideal_descripcion','tono_comunicacion',
+    'propuesta_de_valor','historia_profesional',
   ]
 
-  const keyMatches = expectedKeys.filter(k => cleaned.includes(`"${k}"`))
+  // Must contain at least 3 profile keys to be considered a final JSON
+  const keyMatches = profileKeys.filter(k => cleaned.includes(`"${k}"`))
+  console.log('[tryExtractFinalJson] keyMatches=', keyMatches.length, keyMatches.slice(0, 5))
   if (keyMatches.length < 3) return null
 
-  // Try to find and parse the JSON object
-  const jsonMatch = cleaned.match(/\{[\s\S]+\}/)
-  if (!jsonMatch) return null
+  // Extract JSON: find the outermost { } using a stack-based approach
+  // This avoids the greedy regex problem with nested objects
+  let jsonStr: string | null = null
+  for (let i = 0; i < cleaned.length; i++) {
+    if (cleaned[i] === '{') {
+      let depth = 0
+      let j = i
+      while (j < cleaned.length) {
+        if (cleaned[j] === '{') depth++
+        else if (cleaned[j] === '}') {
+          depth--
+          if (depth === 0) {
+            const candidate = cleaned.slice(i, j + 1)
+            // Only accept if it contains at least 3 profile keys
+            const candidateKeys = profileKeys.filter(k => candidate.includes(`"${k}"`))
+            if (candidateKeys.length >= 3) {
+              jsonStr = candidate
+            }
+            break
+          }
+        }
+        j++
+      }
+      if (jsonStr) break
+    }
+  }
+
+  if (!jsonStr) {
+    console.log('[tryExtractFinalJson] no JSON object found in content')
+    return null
+  }
 
   try {
-    const parsed = JSON.parse(jsonMatch[0]) as Record<string, unknown>
-    const resumenParts: string[] = []
-    if (typeof parsed.propuesta_de_valor === 'string') resumenParts.push(parsed.propuesta_de_valor)
-    if (typeof parsed.historia_personal === 'string') resumenParts.push(parsed.historia_personal)
-    const resumenVisible = resumenParts.join(' ') || 'Perfil recuperado automáticamente.'
+    const parsed = JSON.parse(jsonStr) as Record<string, unknown>
+    const keys = Object.keys(parsed)
+    console.log('[tryExtractFinalJson] parsed OK, keys=', keys.length, keys.slice(0, 8))
 
-    console.log('[tryExtractFinalJson] JSON válido detectado, keys=', Object.keys(parsed).length)
+    // Build a readable resumen from available fields
+    const resumenParts: string[] = []
+    const hp = parsed.historia_personal ?? parsed.historia_profesional
+    const pv = parsed.propuesta_de_valor
+    if (typeof pv === 'string' && pv.length > 10) resumenParts.push(pv)
+    if (typeof hp === 'string' && hp.length > 10) resumenParts.push(hp)
+    const resumenVisible = resumenParts.join(' ').slice(0, 500) || 'Perfil recuperado automáticamente.'
+
     return { resumen_visible: resumenVisible, datos_estructurados: parsed }
-  } catch {
+  } catch (err) {
+    console.error('[tryExtractFinalJson] JSON.parse failed:', err instanceof Error ? err.message : err)
     return null
   }
 }
@@ -289,34 +330,98 @@ export function InterviewChat({ initialSessionId, initialSession, onComplete, on
     console.log('[InterviewChat] mount sid=', sid, 'msgs=', existingMsgs.length, 'temas=', existingTemas.length)
 
     if (existingMsgs.length > 0) {
-      // Check if last assistant message has raw JSON (retroactive recovery)
-      const lastAssistant = [...existingMsgs].reverse().find(m => m.role === 'assistant')
-      const recovered = lastAssistant ? tryExtractFinalJson(lastAssistant.content) : null
+      // ── Diagnostics: inspect last 3 messages ───────────────────────────────
+      const last3 = existingMsgs.slice(-3)
+      console.log('[InterviewChat] últimos 3 mensajes:')
+      last3.forEach((m, i) => {
+        const raw = m.content
+        const t = typeof raw
+        const isArr = Array.isArray(raw)
+        // Normalize to string for inspection
+        const asStr = isArr
+          ? JSON.stringify(raw)
+          : t === 'object' && raw !== null
+            ? JSON.stringify(raw)
+            : t === 'string' ? (raw as string) : String(raw ?? '')
+        console.log(`  [${existingMsgs.length - 3 + i}] role=${m.role} typeof=${t} isArray=${isArr}`)
+        console.log(`       first150=${asStr.slice(0, 150)}`)
+        console.log(`       last150=${asStr.slice(-150)}`)
+      })
 
-      if (recovered) {
-        console.log('[InterviewChat] JSON final detectado — recuperación retroactiva')
-        const msgs = existingMsgs.map(m => ({
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-          displayContent: m.role === 'assistant' ? stripFinalJson(m.content) : m.content,
-          timestamp: m.timestamp ?? new Date().toISOString(),
-        }))
-        void markSessionCompleteAction(sid, recovered.datos_estructurados, recovered.resumen_visible)
-          .then(r => { if (!r.success) console.error('[InterviewChat] markSessionComplete failed:', r.error) })
-        restoreInterview(sid, msgs, ALL_TOPICS, recovered)
-        return
+      // ── Scan ALL assistant messages from last to first ──────────────────────
+      let recovered: RecoveredSummary | null = null
+      const assistantMsgs = [...existingMsgs]
+        .map((m, idx) => ({ ...m, _idx: idx }))
+        .filter(m => m.role === 'assistant')
+        .reverse()
+
+      console.log('[InterviewChat] escaneando', assistantMsgs.length, 'mensajes de assistant...')
+
+      for (const m of assistantMsgs) {
+        // Normalize content to string regardless of how it was stored
+        let contentStr: string
+        if (typeof m.content === 'string') {
+          contentStr = m.content
+        } else if (Array.isArray(m.content)) {
+          // Anthropic sometimes stores content as array of blocks
+          contentStr = (m.content as Array<{ type?: string; text?: string }>)
+            .map(b => (b.type === 'text' ? (b.text ?? '') : JSON.stringify(b)))
+            .join('')
+        } else if (m.content !== null && typeof m.content === 'object') {
+          contentStr = JSON.stringify(m.content)
+        } else {
+          contentStr = String(m.content ?? '')
+        }
+
+        console.log(`[InterviewChat] msg[${m._idx}] contentStr length=${contentStr.length}`)
+        const attempt = tryExtractFinalJson(contentStr)
+        console.log(`[InterviewChat] msg[${m._idx}] tryExtract result=`, attempt ? `FOUND (${Object.keys(attempt.datos_estructurados).length} keys)` : 'null')
+
+        if (attempt) {
+          recovered = attempt
+          // Also clean this message for display
+          const cleanedContent = stripFinalJson(contentStr)
+          console.log('[InterviewChat] JSON final detectado en msg[' + m._idx + '] — recuperación retroactiva')
+
+          const msgs = existingMsgs.map((msg, idx) => ({
+            role: msg.role as 'user' | 'assistant',
+            content: typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content),
+            displayContent: idx === m._idx
+              ? cleanedContent
+              : msg.role === 'assistant'
+                ? (typeof msg.content === 'string'
+                    ? msg.content.replace(/<!--METADATA:.*?-->/s, '').trim()
+                    : JSON.stringify(msg.content))
+                : (typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)),
+            timestamp: msg.timestamp ?? new Date().toISOString(),
+          }))
+
+          void markSessionCompleteAction(sid, recovered.datos_estructurados, recovered.resumen_visible)
+            .then(r => {
+              if (r.success) console.log('[InterviewChat] sesión marcada como completada en DB')
+              else console.error('[InterviewChat] markSessionComplete failed:', r.error)
+            })
+
+          restoreInterview(sid, msgs, ALL_TOPICS, recovered)
+          return
+        }
       }
 
-      // Normal restoration — conversation in progress
-      console.log('[InterviewChat] restaurando conversación en progreso')
-      const msgs = existingMsgs.map(m => ({
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-        displayContent: m.role === 'assistant'
-          ? m.content.replace(/<!--METADATA:.*?-->/s, '').trim()
-          : m.content,
-        timestamp: m.timestamp ?? new Date().toISOString(),
-      }))
+      // No JSON found — restore as in-progress conversation
+      console.log('[InterviewChat] sin JSON final detectado — restaurando conversación en progreso')
+      const msgs = existingMsgs.map(m => {
+        const contentStr = typeof m.content === 'string'
+          ? m.content
+          : JSON.stringify(m.content)
+        return {
+          role: m.role as 'user' | 'assistant',
+          content: contentStr,
+          displayContent: m.role === 'assistant'
+            ? contentStr.replace(/<!--METADATA:.*?-->/s, '').trim()
+            : contentStr,
+          timestamp: m.timestamp ?? new Date().toISOString(),
+        }
+      })
       restoreInterview(sid, msgs, existingTemas)
       return
     }
