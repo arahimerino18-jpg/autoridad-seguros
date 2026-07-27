@@ -273,6 +273,10 @@ async function handleMessage(
 }
 
 // ─── Handle summary generation ────────────────────────────────────────────────
+// IMPORTANT: Does NOT stream raw Claude text to the client.
+// Accumulates the full response server-side, parses it, then sends a single
+// structured event with resumen_visible + datos_estructurados.
+// This prevents the JSON/markdown from leaking into the chat UI.
 
 async function handleSummary(
   conversacion: Message[],
@@ -280,6 +284,10 @@ async function handleSummary(
   userId: string
 ) {
   const encoder = new TextEncoder()
+
+  if (!conversacion || conversacion.length === 0) {
+    return NextResponse.json({ error: 'La conversación está vacía — no se puede generar el resumen.' }, { status: 400 })
+  }
 
   // Build conversation transcript for summary
   const transcript = conversacion
@@ -291,9 +299,9 @@ async function handleSummary(
 
   const stream = new ReadableStream({
     async start(controller) {
-      let fullText = ''
-
       try {
+        // Collect the full response — do NOT stream text chunks to client
+        let fullText = ''
         const claudeStream = await anthropic.messages.stream({
           model: 'claude-sonnet-4-6',
           max_tokens: 2000,
@@ -306,38 +314,48 @@ async function handleSummary(
           ],
         })
 
+        // Send progress pulses so the client knows we're working (no text content)
+        let pulseCount = 0
         for await (const chunk of claudeStream) {
           if (
             chunk.type === 'content_block_delta' &&
             chunk.delta.type === 'text_delta'
           ) {
             fullText += chunk.delta.text
-            controller.enqueue(
-              encoder.encode(`data: ${JSON.stringify({ text: chunk.delta.text })}\n\n`)
-            )
+            // Send a pulse every ~200 chars so the loading indicator stays alive
+            pulseCount += chunk.delta.text.length
+            if (pulseCount > 200) {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ progress: true })}\n\n`))
+              pulseCount = 0
+            }
           }
         }
 
-        // Parse the structured response
+        // Parse the structured response server-side
         const resumeMatch = fullText.match(/===RESUMEN_VISIBLE===\n([\s\S]*?)\n===FIN_RESUMEN===/)
-        const dataMatch = fullText.match(/===DATOS_JSON===\n([\s\S]*?)\n===FIN_DATOS===/)
+        const dataMatch   = fullText.match(/===DATOS_JSON===\n([\s\S]*?)\n===FIN_DATOS===/)
 
-        const resumenVisible = resumeMatch ? resumeMatch[1].trim() : ''
+        if (!resumeMatch) {
+          throw new Error('La IA no devolvió el formato esperado. Intenta de nuevo.')
+        }
+
+        const resumenVisible = resumeMatch[1].trim()
         let datosEstructurados: Record<string, unknown> = {}
 
         if (dataMatch) {
           try {
             datosEstructurados = JSON.parse(dataMatch[1]) as Record<string, unknown>
           } catch {
-            // JSON parse failed — keep empty
+            // Malformed JSON — keep empty object, resumen_visible still valid
+            console.error('[handleSummary] Failed to parse datos_estructurados JSON')
           }
         }
 
-        // Save summary to session
+        // Persist to interview_sessions
         if (sessionId) {
           const supabase = await createClient()
           // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          await (supabase.from('interview_sessions') as any)
+          const { error: updateError } = await (supabase.from('interview_sessions') as any)
             .update({
               status: 'resumen_generado',
               resumen_visible: resumenVisible,
@@ -345,8 +363,13 @@ async function handleSummary(
             })
             .eq('id', sessionId)
             .eq('user_id', userId)
+
+          if (updateError) {
+            console.error('[handleSummary] DB update failed:', updateError.message)
+          }
         }
 
+        // Send single structured completion event — client uses this to show SummaryReview
         controller.enqueue(
           encoder.encode(
             `data: ${JSON.stringify({
@@ -359,9 +382,11 @@ async function handleSummary(
         controller.enqueue(encoder.encode('data: [DONE]\n\n'))
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Error al generar resumen'
+        console.error('[handleSummary] error:', message)
         controller.enqueue(
           encoder.encode(`data: ${JSON.stringify({ error: message })}\n\n`)
         )
+        controller.enqueue(encoder.encode('data: [DONE]\n\n'))
       } finally {
         controller.close()
       }

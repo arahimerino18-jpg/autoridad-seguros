@@ -194,6 +194,8 @@ export function useInterview(): UseInterviewReturn {
       }
 
       setMessages([assistantMsg])
+      // Ensure metadata has latest temas_cubiertos
+      metadataRef.current = newMeta
       setMetadata(newMeta)
       metadataRef.current = newMeta
       setCurrentStreamText('')
@@ -287,13 +289,29 @@ export function useInterview(): UseInterviewReturn {
         sessionIdRef.current
       )
 
-      if (newSummary) {
-        setSummary(newSummary)
-        setPhase('reviewing_summary')
+      if (!newSummary) {
+        throw new Error('No se recibió el resumen de la IA. Intenta de nuevo.')
       }
+
+      // Mark all topics as covered when summary is generated
+      setMetadata(prev => ({
+        ...prev,
+        listo_para_resumir: true,
+        temas_cubiertos: Object.keys({
+          historia_personal: 1, motivacion_profunda: 1, mercado_objetivo: 1,
+          productos_principales: 1, diferenciadores: 1, estilo_comunicacion: 1,
+          valores: 1, cliente_ideal: 1, objeciones_frecuentes: 1,
+          frases_propias: 1, ctas_efectivos: 1, mision_profesional: 1, vision_negocio: 1,
+        }),
+      }))
+
+      setSummary(newSummary)
+      setPhase('reviewing_summary')
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return
-      setError(err instanceof Error ? err.message : 'Error al generar el resumen')
+      const msg = err instanceof Error ? err.message : 'Error al generar el resumen'
+      console.error('[useInterview] generateSummaryInternal failed:', msg)
+      setError(msg)
       setPhase('conversation')
     } finally {
       setCurrentStreamText('')

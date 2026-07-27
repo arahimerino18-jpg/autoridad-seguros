@@ -7,6 +7,27 @@ import { Button, Alert } from '@/components/ui'
 import { cn } from '@/lib/utils'
 import { useToast } from '@/hooks/use-toast'
 
+// ─── Simple Markdown renderer ─────────────────────────────────────────────────
+// Handles **bold**, *italic*, and line breaks without a full markdown library.
+function renderMarkdown(text: string): React.ReactNode {
+  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*]+\*)/g)
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i}>{part.slice(2, -2)}</strong>
+    }
+    if (part.startsWith('*') && part.endsWith('*')) {
+      return <em key={i}>{part.slice(1, -1)}</em>
+    }
+    // Preserve line breaks
+    return part.split('\n').map((line, j) => (
+      <span key={`${i}-${j}`}>
+        {j > 0 && <br />}
+        {line}
+      </span>
+    ))
+  })
+}
+
 // ─── Topic coverage indicator ─────────────────────────────────────────────────
 
 const TOPIC_LABELS: Record<string, string> = {
@@ -85,7 +106,7 @@ function MessageBubble({
             : 'bg-brand-navy-500 text-white rounded-tr-none'
         )}
       >
-        {message.displayContent}
+        {isAssistant ? renderMarkdown(message.displayContent) : message.displayContent}
         {isStreaming && (
           <span className="inline-block w-1 h-3.5 bg-current ml-0.5 animate-pulse rounded-sm" />
         )}
