@@ -39,30 +39,42 @@ export default async function OnboardingPage() {
   // If user has first_value already but no completion, send to step 4
   if (p?.first_value_generated_at && resumeStep < 4) resumeStep = 4
 
-  // Get or create interview session for Brand Builder interview reuse
-  const { data: sessionData } = await client
+  // Get or create interview session
+  // INSTRUMENTATION: log every step server-side (visible in Vercel Function Logs)
+  console.log('[Onboarding] user.id:', user?.id ?? 'NULL — auth failed')
+
+  const { data: sessionData, error: selectError } = await client
     .from('interview_sessions')
     .select('id')
     .eq('user_id', user.id)
     .order('created_at', { ascending: false })
     .limit(1)
-    .single()
+    .maybeSingle()  // FIX: maybeSingle() returns null when 0 rows, no error
+
+  console.log('[Onboarding] select result:', { id: (sessionData as {id?:string}|null)?.id ?? null, error: selectError?.message ?? null })
 
   const sess = sessionData as { id?: string } | null
 
-  // Create a session if none exists
   let sessionId = sess?.id ?? ''
   if (!sessionId) {
+    const insertPayload = { user_id: user.id, status: 'en_progreso' }
+    console.log('[Onboarding] before insert:', insertPayload)
+
     const { data: newSess, error: sessError } = await client
       .from('interview_sessions')
-      .insert({ user_id: user.id, status: 'en_progreso' })
+      .insert(insertPayload)
       .select('id')
       .single()
+
+    console.log('[Onboarding] insert result:', { id: (newSess as {id?:string}|null)?.id ?? null, error: sessError?.message ?? null, code: sessError?.code ?? null })
+
     if (sessError) {
-      console.error('[Onboarding] Failed to create interview_session:', sessError.message)
+      console.error('[Onboarding] CRITICAL: interview_session insert failed:', sessError.message, 'code:', sessError.code)
     }
     sessionId = (newSess as { id?: string } | null)?.id ?? ''
   }
+
+  console.log('[Onboarding] final sessionId:', sessionId || 'EMPTY — interview will not start')
 
   // Initialize onboarding tracking if first time
   if (lastStep === 0) {
