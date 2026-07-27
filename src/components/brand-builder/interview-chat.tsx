@@ -79,22 +79,22 @@ function MessageBubble({
       )}
       <div
         className={cn(
-          'max-w-[78%] rounded-2xl px-4 py-3 text-sm leading-relaxed',
+          'max-w-[80%] rounded-2xl px-4 py-3 text-sm leading-relaxed',
           isAssistant
-            ? 'bg-white border border-gray-100 shadow-card text-gray-800 rounded-tl-none'
+            ? 'bg-gray-100 text-gray-800 rounded-tl-none'
             : 'bg-brand-navy-500 text-white rounded-tr-none'
         )}
       >
         {message.displayContent}
         {isStreaming && (
-          <span className="inline-block w-1 h-4 bg-current ml-0.5 animate-blink align-middle" />
+          <span className="inline-block w-1 h-3.5 bg-current ml-0.5 animate-pulse rounded-sm" />
         )}
       </div>
     </div>
   )
 }
 
-// ─── Summary review panel ─────────────────────────────────────────────────────
+// ─── Summary review ───────────────────────────────────────────────────────────
 
 function SummaryReview({
   summary,
@@ -109,74 +109,44 @@ function SummaryReview({
   onRegenerate: () => void
   isLoading: boolean
 }) {
-  const fieldCount = Object.keys(summary.datos_estructurados).length
-
   return (
-    <div className="p-5 space-y-5 animate-fade-in">
-      <div>
-        <h3 className="text-base font-semibold text-gray-900 mb-1">
-          Tu perfil profesional
-        </h3>
-        <p className="text-xs text-gray-500">
-          La IA extrajo {fieldCount} datos de tu entrevista. Revisa, edita si quieres, y aprueba.
-        </p>
-      </div>
-
-      <div>
-        <label className="block text-xs font-medium text-gray-500 mb-1.5">
-          Resumen visible (editable)
-        </label>
+    <div className="flex flex-col h-full p-4 gap-4">
+      <div className="flex-1 overflow-y-auto">
+        <h3 className="font-semibold text-gray-800 mb-3">Resumen de tu perfil IA</h3>
         <textarea
           value={summary.resumen_visible}
-          onChange={(e) => onEdit(e.target.value)}
-          rows={8}
-          className="w-full rounded-xl border border-gray-200 p-3 text-sm text-gray-800 focus:outline-none focus:ring-2 focus:ring-brand-navy-500 resize-none leading-relaxed"
+          onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onEdit(e.target.value)}
+          className="w-full h-48 p-3 border border-gray-200 rounded-xl text-sm text-gray-700 resize-none focus:outline-none focus:ring-2 focus:ring-brand-navy-300"
+          placeholder="Resumen generado..."
         />
+        <p className="text-xs text-gray-400 mt-1">
+          Puedes editar el resumen antes de guardar. Este texto se usará para personalizar todo el contenido de la plataforma.
+        </p>
       </div>
-
-      <div>
-        <p className="text-xs font-medium text-gray-500 mb-2">Datos extraídos para la IA</p>
-        <div className="grid grid-cols-2 gap-2">
-          {Object.entries(summary.datos_estructurados)
-            .filter(([, v]) => v && String(v).length > 0)
-            .slice(0, 10)
-            .map(([key, value]) => (
-              <div key={key} className="bg-brand-navy-50 rounded-lg px-3 py-2">
-                <p className="text-2xs text-brand-navy-400 font-medium uppercase tracking-wide">
-                  {key.replace(/_/g, ' ')}
-                </p>
-                <p className="text-xs text-brand-navy-700 mt-0.5 line-clamp-2">
-                  {Array.isArray(value) ? (value as string[]).join(', ') : String(value)}
-                </p>
-              </div>
-            ))}
-        </div>
-      </div>
-
-      <div className="flex gap-3">
+      <div className="flex gap-2 shrink-0">
         <Button
           variant="secondary"
+          size="sm"
           onClick={onRegenerate}
           disabled={isLoading}
           className="flex-1"
-          size="sm"
         >
           Regenerar
         </Button>
         <Button
+          size="sm"
           onClick={onApprove}
-          isLoading={isLoading}
-          loadingText="Guardando..."
+          disabled={isLoading}
           className="flex-1"
         >
-          Aprobar y guardar →
+          {isLoading ? 'Guardando...' : 'Guardar perfil IA'}
         </Button>
       </div>
     </div>
   )
 }
 
-// ─── Main interview component ─────────────────────────────────────────────────
+// ─── Main component ───────────────────────────────────────────────────────────
 
 interface InterviewChatProps {
   initialSessionId?: string
@@ -211,12 +181,37 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages, currentStreamText])
 
-  // Start interview when component mounts
+  // Start interview when component mounts with a valid session ID.
+  //
+  // Why [initialSessionId] only — no stale closure risk:
+  //   startInterview is stable (defined with useCallback([streamRequest]),
+  //   and streamRequest is stable (useCallback([])). Neither is ever recreated.
+  //   So the function reference captured here is always the correct, current one.
+  //   There is no need to list startInterview as a dep because it never changes.
+  //   Listing initialSessionId ensures the effect re-runs if a new session is
+  //   provided (e.g., session creation retried from outside), but not on every render.
+  //
+  // Timeout: cleared in success (via finally in startInterview), in error (same),
+  //   and on component unmount (cleanup return).
   useEffect(() => {
-    if (initialSessionId && phase === 'idle') {
-      startInterview(initialSessionId)
+    if (!initialSessionId) return
+
+    let cancelled = false
+    const timeoutId = setTimeout(() => {
+      if (!cancelled) {
+        console.error('[InterviewChat] startInterview exceeded 15s. Check /api/ai/interview.')
+      }
+    }, 15_000)
+
+    void startInterview(initialSessionId).finally(() => {
+      if (!cancelled) clearTimeout(timeoutId)
+    })
+
+    return () => {
+      cancelled = true
+      clearTimeout(timeoutId)
     }
-  }, [initialSessionId, phase, startInterview])
+  }, [initialSessionId, startInterview]) // startInterview is stable — this is safe
 
   const handleSend = useCallback(async () => {
     if (!inputText.trim() || isWaiting) return
@@ -226,7 +221,7 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
   }, [inputText, isWaiting, sendMessage])
 
   const handleKeyDown = useCallback(
-    (e: React.KeyboardEvent) => {
+    (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault()
         void handleSend()
@@ -235,15 +230,14 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
     [handleSend]
   )
 
-  const handleApprove = async () => {
-    if (!summary || !sessionId) return
+  async function handleApprove() {
     approveSummary()
     setIsSaving(true)
 
     const result = await saveInterviewResultAction({
-      datos_estructurados: summary.datos_estructurados,
-      resumen_visible: summary.resumen_visible,
-      session_id: sessionId,
+      datos_estructurados: summary!.datos_estructurados,
+      resumen_visible: summary!.resumen_visible,
+      session_id: sessionId ?? initialSessionId ?? '',
     })
 
     if (result.success) {
@@ -255,21 +249,40 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
     }
   }
 
-  // ── Idle state ──────────────────────────────────────────────────────────────
+  // ── Idle / loading state ───────────────────────────────────────────────────
   if (phase === 'idle') {
     return (
-      <div className="flex items-center justify-center p-8">
+      <div className="flex items-center justify-center p-8 h-full">
         <div className="text-center">
           <div className="w-12 h-12 rounded-full bg-brand-navy-100 flex items-center justify-center mx-auto mb-3">
-            <span className="text-2xl">🎙️</span>
+            {error ? (
+              <span className="text-2xl">⚠️</span>
+            ) : (
+              <span className="text-2xl">🎙️</span>
+            )}
           </div>
-          <p className="text-sm text-gray-500">Iniciando entrevista...</p>
+          {error ? (
+            <div className="text-sm text-red-600 bg-red-50 rounded-xl px-4 py-3 max-w-xs mx-auto">
+              <p className="font-semibold mb-1">Error al iniciar la entrevista</p>
+              <p className="text-xs mb-3">{error}</p>
+              <button
+                onClick={() => {
+                  if (initialSessionId) void startInterview(initialSessionId)
+                }}
+                className="text-xs font-semibold text-white bg-red-600 hover:bg-red-700 px-3 py-1.5 rounded-lg transition-colors"
+              >
+                Intentar de nuevo
+              </button>
+            </div>
+          ) : (
+            <p className="text-sm text-gray-500">Iniciando entrevista...</p>
+          )}
         </div>
       </div>
     )
   }
 
-  // ── Summary review state ────────────────────────────────────────────────────
+  // ── Summary review state ───────────────────────────────────────────────────
   if (phase === 'reviewing_summary' || phase === 'saving') {
     return summary ? (
       <SummaryReview
@@ -282,7 +295,7 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
     ) : null
   }
 
-  // ── Generating summary state ────────────────────────────────────────────────
+  // ── Generating summary state ───────────────────────────────────────────────
   if (phase === 'generating_summary') {
     return (
       <div className="flex flex-col items-center justify-center p-10 gap-4">
@@ -292,31 +305,32 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
           </svg>
         </div>
         <div className="text-center">
-          <p className="text-sm font-medium text-gray-800">Analizando tu entrevista...</p>
-          <p className="text-xs text-gray-400 mt-1">La IA está construyendo tu perfil profesional</p>
+          <p className="font-semibold text-gray-800">Generando tu Perfil IA</p>
+          <p className="text-sm text-gray-500 mt-1">Marco está analizando toda la entrevista...</p>
         </div>
         {currentStreamText && (
-          <div className="w-full max-w-sm bg-gray-50 rounded-xl p-4 text-xs text-gray-600 font-mono line-clamp-4">
+          <p className="text-xs text-gray-400 italic max-w-xs text-center line-clamp-3">
             {currentStreamText}
-          </div>
+          </p>
         )}
       </div>
     )
   }
 
-  // ── Conversation state ──────────────────────────────────────────────────────
+  // ── Conversation state ─────────────────────────────────────────────────────
   return (
     <div className="flex flex-col h-full">
-      {/* Topic coverage */}
       <TopicBar covered={metadata.temas_cubiertos} />
 
-      {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4 min-h-0">
+      <div className="flex-1 overflow-y-auto p-4 space-y-4">
         {messages.map((msg, i) => (
-          <MessageBubble key={i} message={msg} />
+          <MessageBubble
+            key={i}
+            message={msg}
+            isStreaming={i === messages.length - 1 && isWaiting}
+          />
         ))}
 
-        {/* Streaming message */}
         {isWaiting && currentStreamText && (
           <MessageBubble
             message={{ role: 'assistant', displayContent: currentStreamText }}
@@ -324,75 +338,70 @@ export function InterviewChat({ initialSessionId, onComplete, onSkip }: Intervie
           />
         )}
 
-        {/* Typing indicator */}
         {isWaiting && !currentStreamText && (
           <div className="flex gap-3">
             <div className="w-8 h-8 rounded-full bg-brand-navy-500 flex items-center justify-center shrink-0">
               <span className="text-white text-xs font-bold">M</span>
             </div>
-            <div className="bg-white border border-gray-100 shadow-card rounded-2xl rounded-tl-none px-4 py-3 flex gap-1 items-center">
-              {[0, 1, 2].map((i) => (
-                <span
-                  key={i}
-                  className="w-1.5 h-1.5 bg-gray-300 rounded-full animate-pulse"
-                  style={{ animationDelay: `${i * 0.15}s` }}
-                />
-              ))}
+            <div className="bg-gray-100 rounded-2xl rounded-tl-none px-4 py-3">
+              <div className="flex gap-1">
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="w-1.5 h-1.5 rounded-full bg-gray-400 animate-bounce"
+                    style={{ animationDelay: `${i * 0.15}s` }}
+                  />
+                ))}
+              </div>
             </div>
           </div>
+        )}
+
+        {error && (
+          <Alert variant="danger">
+            <p className="text-sm">{error}</p>
+          </Alert>
         )}
 
         <div ref={messagesEndRef} />
       </div>
 
-      {/* Error */}
-      {error && (
-        <div className="px-4 pb-2">
-          <Alert variant="danger" onDismiss={() => {}}>
-            {error}
-          </Alert>
-        </div>
-      )}
-
-      {/* Generate summary CTA when ready */}
-      {metadata.listo_para_resumir && !isWaiting && (
-        <div className="px-4 pb-2 animate-fade-in">
-          <button
-            onClick={() => void generateSummary()}
-            className="w-full py-2.5 text-sm font-medium bg-brand-gold-50 text-brand-gold-600 hover:bg-brand-gold-100 rounded-xl border border-brand-gold-200 transition-colors"
-          >
-            ✨ Tengo suficiente información — Generar mi perfil
-          </button>
-        </div>
-      )}
-
-      {/* Input */}
-      <div className="border-t border-gray-100 p-3 flex gap-2">
-        <textarea
-          value={inputText}
-          onChange={(e) => setInputText(e.target.value)}
-          onKeyDown={handleKeyDown}
-          placeholder="Escribe tu respuesta..."
-          rows={2}
-          disabled={isWaiting}
-          className="flex-1 resize-none rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy-500 disabled:bg-gray-50 disabled:text-gray-400"
-        />
-        <div className="flex flex-col gap-2">
-          <Button
-            size="icon"
-            onClick={() => void handleSend()}
-            disabled={!inputText.trim() || isWaiting}
-          >
-            <svg className="h-4 w-4" viewBox="0 0 20 20" fill="currentColor">
-              <path d="M10.894 2.553a1 1 0 00-1.788 0l-7 14a1 1 0 001.169 1.409l5-1.429A1 1 0 009 15.571V11a1 1 0 112 0v4.571a1 1 0 00.725.962l5 1.428a1 1 0 001.17-1.408l-7-14z" />
-            </svg>
-          </Button>
+      <div className="p-4 border-t border-gray-100">
+        {metadata.listo_para_resumir ? (
+          <div className="flex flex-col gap-2">
+            <p className="text-xs text-center text-brand-navy-600 font-medium">
+              ✓ Entrevista completa — listo para generar tu Perfil IA
+            </p>
+            <Button onClick={() => void generateSummary()} disabled={isWaiting} className="w-full">
+              Generar mi Perfil IA
+            </Button>
+          </div>
+        ) : (
+          <div className="flex gap-2">
+            <textarea
+              value={inputText}
+              onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => setInputText(e.target.value)}
+              onKeyDown={handleKeyDown}
+              placeholder="Escribe tu respuesta..."
+              rows={2}
+              disabled={isWaiting}
+              className="flex-1 resize-none rounded-xl border border-gray-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy-300 disabled:opacity-50"
+            />
+            <button
+              onClick={() => void handleSend()}
+              disabled={isWaiting || !inputText.trim()}
+              className="px-4 py-2 rounded-xl bg-brand-navy-500 text-white text-sm font-medium hover:bg-brand-navy-600 disabled:opacity-50 transition-colors self-end"
+            >
+              Enviar
+            </button>
+          </div>
+        )}
+        <div className="flex justify-center mt-2">
           <button
             onClick={onSkip}
-            className="text-2xs text-gray-300 hover:text-gray-500 transition-colors text-center px-1"
-            title="Saltar entrevista"
+            className="text-xs text-gray-400 hover:text-gray-600 underline"
           >
-            saltar
+            Completar después
           </button>
         </div>
       </div>
