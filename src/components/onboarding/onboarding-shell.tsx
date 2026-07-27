@@ -11,6 +11,7 @@ import {
   completeOnboarding,
 } from '@/lib/onboarding/actions'
 import { InterviewChat } from '@/components/brand-builder/interview-chat'
+import { createInterviewSessionAction } from '@/lib/brand-builder/actions'
 import { cn } from '@/lib/utils'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -263,17 +264,19 @@ function Step2Products({
 // ─── Step 3: Interview ────────────────────────────────────────────────────────
 
 function Step3Interview({
-  sessionId,
   onComplete,
   onSkip,
 }: {
-  sessionId: string
+  sessionId?: string  // kept for API compat but not used — session created on demand
   agentName?: string
   onComplete: (sid: string) => void
   onSkip: () => void
 }) {
   const [skipping, setSkipping] = useState(false)
-  const [showInterview, setShowInterview] = useState(false)
+  // activeSessionId is set when the Server Action succeeds
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null)
+  const [creating, setCreating] = useState(false)
+  const [createError, setCreateError] = useState<string | null>(null)
 
   const handleSkip = async () => {
     setSkipping(true)
@@ -281,77 +284,105 @@ function Step3Interview({
     onSkip()
   }
 
-  if (!showInterview) {
+  const handleStartInterview = async () => {
+    setCreating(true)
+    setCreateError(null)
+    try {
+      const result = await createInterviewSessionAction()
+      if (!result.success || !result.sessionId) {
+        setCreateError(result.error ?? 'No se pudo crear la sesión de entrevista. Intenta de nuevo.')
+        return
+      }
+      setActiveSessionId(result.sessionId)
+    } catch (err) {
+      setCreateError(err instanceof Error ? err.message : 'Error inesperado')
+    } finally {
+      setCreating(false)
+    }
+  }
+
+  // Show interview once we have a valid session ID
+  if (activeSessionId) {
     return (
-      <div className="space-y-6">
-        <div>
-          <h2 className="text-2xl font-bold text-gray-900 mb-1">La Entrevista Inteligente de Marca</h2>
-          <p className="text-gray-500 text-sm">Marco, tu asistente de IA, hará 8–12 preguntas conversacionales para entender tu historia, tu voz y tu estilo.</p>
-        </div>
-
-        <div className="bg-gradient-to-br from-[#1B2E6B] to-[#2a4080] rounded-2xl p-5 text-white">
-          <p className="text-sm font-semibold mb-3 text-blue-200">Con esta entrevista, la IA personaliza:</p>
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              '✍️ Marketing Copilot', '📊 AI Growth Engine',
-              '🎬 Content Studio', '🛡️ Objection AI',
-              '🎯 Recomendaciones', '💡 Cliente Ideal',
-            ].map(item => (
-              <div key={item} className="text-xs text-blue-100">{item}</div>
-            ))}
-          </div>
-          <p className="text-xs text-blue-300 mt-3">Duración estimada: 5–8 minutos</p>
-        </div>
-
-        <div className="flex flex-col gap-3">
-          <button
-            onClick={() => {
-              console.log('[Step3Interview] button clicked, sessionId=', JSON.stringify(sessionId), 'truthy=', !!sessionId)
-              setShowInterview(true)
-            }}
-            className="w-full py-3.5 rounded-xl bg-[#1B2E6B] text-white font-semibold hover:bg-[#16255a] transition-colors"
-          >
-            🎙️ Comenzar entrevista ahora
-          </button>
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <h2 className="text-lg font-bold text-gray-900">Entrevista con Marco</h2>
           <button
             onClick={handleSkip}
-            disabled={skipping}
-            className="w-full py-2.5 rounded-xl border border-gray-200 text-gray-500 text-sm hover:bg-gray-50 transition-colors"
+            className="text-xs text-gray-400 hover:text-gray-600"
           >
-            {skipping ? 'Guardando...' : 'Completar después → (el contenido será menos personalizado)'}
+            Completar después
           </button>
         </div>
-
-        <p className="text-xs text-center text-gray-400">
-          Puedes completar la entrevista en cualquier momento desde Brand Builder → Inteligencia IA
-        </p>
+        <div className="h-[500px]">
+          <InterviewChat
+            initialSessionId={activeSessionId}
+            onComplete={(sid?: string) => {
+              void onboardingCompleteInterview(sid ?? activeSessionId).then(() => onComplete(sid ?? activeSessionId))
+            }}
+            onSkip={handleSkip}
+          />
+        </div>
       </div>
     )
   }
 
-  // CLIENT-SIDE DIAGNOSTIC: visible in browser Console
-  console.log('[Step3Interview] showInterview=true, sessionId=', JSON.stringify(sessionId), 'type=', typeof sessionId, 'truthy=', !!sessionId)
-
+  // Pre-interview screen
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold text-gray-900">Entrevista con Marco</h2>
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-2xl font-bold text-gray-900 mb-1">La Entrevista Inteligente de Marca</h2>
+        <p className="text-gray-500 text-sm">Marco, tu asistente de IA, hará 8–12 preguntas conversacionales para entender tu historia, tu voz y tu estilo.</p>
+      </div>
+
+      <div className="bg-gradient-to-br from-[#1B2E6B] to-[#2a4080] rounded-2xl p-5 text-white">
+        <p className="text-sm font-semibold mb-3 text-blue-200">Con esta entrevista, la IA personaliza:</p>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            '✍️ Marketing Copilot', '📊 AI Growth Engine',
+            '🎬 Content Studio', '🛡️ Objection AI',
+            '🎯 Recomendaciones', '💡 Cliente Ideal',
+          ].map(item => (
+            <div key={item} className="text-xs text-blue-100">{item}</div>
+          ))}
+        </div>
+        <p className="text-xs text-blue-300 mt-3">Duración estimada: 5–8 minutos</p>
+      </div>
+
+      {createError && (
+        <div className="rounded-xl bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+          <p className="font-semibold mb-0.5">Error al iniciar la entrevista</p>
+          <p>{createError}</p>
+        </div>
+      )}
+
+      <div className="flex flex-col gap-3">
         <button
-          onClick={handleSkip}
-          className="text-xs text-gray-400 hover:text-gray-600"
+          onClick={() => void handleStartInterview()}
+          disabled={creating}
+          className="w-full py-3.5 rounded-xl bg-[#1B2E6B] text-white font-semibold hover:bg-[#16255a] disabled:opacity-60 transition-colors flex items-center justify-center gap-2"
         >
-          Completar después
+          {creating ? (
+            <>
+              <span className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              Preparando entrevista...
+            </>
+          ) : (
+            '🎙️ Comenzar entrevista ahora'
+          )}
+        </button>
+        <button
+          onClick={() => void handleSkip()}
+          disabled={skipping}
+          className="w-full py-2.5 rounded-xl border border-gray-200 text-gray-500 text-sm hover:bg-gray-50 transition-colors"
+        >
+          {skipping ? 'Guardando...' : 'Completar después → (el contenido será menos personalizado)'}
         </button>
       </div>
-      <div className="h-[500px]">
-        <InterviewChat
-          initialSessionId={sessionId}
-          onComplete={(sid?: string) => {
-            void onboardingCompleteInterview(sid ?? sessionId).then(() => onComplete(sid ?? sessionId))
-          }}
-          onSkip={handleSkip}
-        />
-      </div>
+
+      <p className="text-xs text-center text-gray-400">
+        Puedes completar la entrevista en cualquier momento desde Brand Builder → Inteligencia IA
+      </p>
     </div>
   )
 }

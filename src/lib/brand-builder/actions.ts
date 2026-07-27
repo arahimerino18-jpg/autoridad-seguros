@@ -351,3 +351,49 @@ export async function saveInterviewResultAction(data: InterviewSaveData): Promis
   revalidatePath('/dashboard')
   return { success: true, data: undefined }
 }
+
+// ─── Create Interview Session ─────────────────────────────────────────────────
+// Called client-side when the user clicks "Comenzar entrevista ahora".
+// Server Actions have correctly hydrated cookies in Vercel — auth.uid() works.
+// This avoids the RSC cookie propagation issue that caused sessionId = ''.
+
+export async function createInterviewSessionAction(): Promise<{
+  success: boolean
+  sessionId?: string
+  error?: string
+}> {
+  const supabase = await createClient()
+  const { data: { user } } = await supabase.auth.getUser()
+  if (!user) return { success: false, error: 'No autenticado' }
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const client = supabase as any
+
+  // Return existing active session if one exists
+  const { data: existing } = await client
+    .from('interview_sessions')
+    .select('id')
+    .eq('user_id', user.id)
+    .eq('es_activa', true)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (existing?.id) {
+    return { success: true, sessionId: existing.id as string }
+  }
+
+  // Create new session
+  const { data: newSess, error } = await client
+    .from('interview_sessions')
+    .insert({ user_id: user.id, status: 'en_progreso', es_activa: true })
+    .select('id')
+    .single()
+
+  if (error) {
+    console.error('[createInterviewSessionAction] failed:', error.message, 'code:', error.code)
+    return { success: false, error: `Error al crear la sesión: ${error.message}` }
+  }
+
+  return { success: true, sessionId: (newSess as { id: string }).id }
+}
