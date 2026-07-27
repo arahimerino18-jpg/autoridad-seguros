@@ -1,23 +1,18 @@
 /**
  * Autoridad Seguros AI™ — Route Protection Middleware
  *
- * Fixes applied (Phase 17 staging):
- *   1. Checks BOTH onboarding_done AND onboarding_completed (migration 008 compat)
- *   2. Matcher explicitly excludes /api/* to prevent interference with auth callbacks
- *   3. /onboarding excluded from PROTECTED_ROUTES (has its own auth check in page)
- *   4. Strict equality on AUTH_ROUTES to prevent over-matching
+ * BASE: commit 4f6c572
+ * FIX: two changes only:
+ *   1. onboarding check uses BOTH flags (onboarding_done OR onboarding_completed)
+ *      Migration 008 added onboarding_completed — old code only checked onboarding_done
+ *   2. Removed /api/ from matcher so API routes are not intercepted
  */
 
 import { createServerClient } from '@supabase/ssr'
 import { type NextRequest, NextResponse } from 'next/server'
 
-// Routes that require a valid session
-const PROTECTED_PREFIXES = ['/dashboard', '/brand-builder', '/content-studio',
-  '/marketing-copilot', '/objection-ai', '/performance', '/settings',
-  '/contenidos', '/precios']
-
-// Auth pages — redirect away if already logged in
-const AUTH_EXACT = new Set(['/login', '/register'])
+const PROTECTED_ROUTES = ['/dashboard', '/onboarding']
+const AUTH_ROUTES = ['/login', '/register', '/verify', '/reset-password']
 
 export async function middleware(request: NextRequest) {
   let supabaseResponse = NextResponse.next({ request })
@@ -43,52 +38,37 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  // CRITICAL: getUser() refreshes the session token via cookies.
-  // Never skip this call — it keeps the session alive.
   const { data: { user } } = await supabase.auth.getUser()
-
   const { pathname } = request.nextUrl
 
-  // ── Rule 1: Protected routes require session ───────────────────────────────
-  const isProtected = PROTECTED_PREFIXES.some(p => pathname.startsWith(p))
-
-  if (isProtected && !user) {
-    const url = new URL('/login', request.url)
-    url.searchParams.set('redirectTo', pathname)
-    const res = NextResponse.redirect(url)
-    // Copy cookies so session refresh is not lost
-    supabaseResponse.cookies.getAll().forEach(cookie => {
-      res.cookies.set(cookie.name, cookie.value)
-    })
-    return res
+  // Rule 1: Protect dashboard and onboarding routes
+  const isProtectedRoute = PROTECTED_ROUTES.some((route) =>
+    pathname.startsWith(route)
+  )
+  if (isProtectedRoute && !user) {
+    const redirectUrl = new URL('/login', request.url)
+    redirectUrl.searchParams.set('redirectTo', pathname)
+    return NextResponse.redirect(redirectUrl)
   }
 
-  // ── Rule 2: Auth pages redirect logged-in users to dashboard ──────────────
-  if (AUTH_EXACT.has(pathname) && user) {
-    const res = NextResponse.redirect(new URL('/dashboard', request.url))
-    supabaseResponse.cookies.getAll().forEach(cookie => {
-      res.cookies.set(cookie.name, cookie.value)
-    })
-    return res
+  // Rule 2: Redirect authenticated users away from auth pages
+  const isAuthRoute = AUTH_ROUTES.some((route) => pathname === route)
+  if (isAuthRoute && user) {
+    return NextResponse.redirect(new URL('/dashboard', request.url))
   }
 
-  // ── Rule 3: Dashboard → check onboarding (supports both flag names) ────────
-  if (user && pathname === '/dashboard') {
+  // Rule 3: Check onboarding completion
+  // FIX: check BOTH flags — migration 008 added onboarding_completed
+  // Old code: !profile.onboarding_done → caused loop when onboarding_done=false but onboarding_completed=true
+  if (user && pathname.startsWith('/dashboard')) {
     const { data: profile } = await supabase
       .from('profiles')
       .select('onboarding_done, onboarding_completed')
       .eq('id', user.id)
       .single()
 
-    // Accept either flag — migration 008 added onboarding_completed
-    const isComplete = profile?.onboarding_completed || profile?.onboarding_done
-
-    if (profile && !isComplete) {
-      const res = NextResponse.redirect(new URL('/onboarding', request.url))
-      supabaseResponse.cookies.getAll().forEach(cookie => {
-        res.cookies.set(cookie.name, cookie.value)
-      })
-      return res
+    if (profile && !profile.onboarding_done && !profile.onboarding_completed) {
+      return NextResponse.redirect(new URL('/onboarding', request.url))
     }
   }
 
@@ -97,13 +77,6 @@ export async function middleware(request: NextRequest) {
 
 export const config = {
   matcher: [
-    /*
-     * Match all routes EXCEPT:
-     * - _next/static, _next/image (Next.js internals)
-     * - favicon.ico, public assets
-     * - /api/* (API routes handle their own auth)
-     * - /auth/* (Supabase auth callback routes)
-     */
-    '/((?!_next/static|_next/image|favicon\\.ico|api/|auth/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+    '/((?!_next/static|_next/image|favicon.ico|api/|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
   ],
 }
