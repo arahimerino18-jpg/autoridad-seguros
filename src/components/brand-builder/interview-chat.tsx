@@ -50,80 +50,145 @@ interface RecoveredSummary {
  * may contain raw JSON (from the previous bug where summary leaked into chat).
  * Returns null if the message is a normal conversational response.
  */
+// Profile field keys expected in the final JSON
+const PROFILE_ROOT_KEYS = [
+  'historia_personal','motivacion_profunda','mercado_objetivo',
+  'productos_principales','estilo_comunicacion','diferenciadores',
+  'valores','objeciones_frecuentes','frases_propias','ctas_efectivos',
+  'mision','vision','mision_profesional','vision_negocio',
+  'cliente_ideal','cliente_ideal_descripcion','tono_comunicacion',
+  'propuesta_de_valor','historia_profesional','nivel_formalidad',
+  'tipo_humor','nivel_emocional','usa_emojis','usa_historias',
+]
+
+// METADATA keys — never treat as a profile JSON
+const METADATA_ROOT_KEYS = new Set(['temas_cubiertos','listo_para_resumir','extractos'])
+
+function isMetadataObject(obj: Record<string, unknown>): boolean {
+  const keys = Object.keys(obj)
+  // METADATA has exactly: temas_cubiertos, listo_para_resumir, extractos (±1 key)
+  const metaHits = keys.filter(k => METADATA_ROOT_KEYS.has(k))
+  return metaHits.length >= 2 && keys.length <= 5
+}
+
+/**
+ * Normalizes the parsed JSON to a flat profile object.
+ * Handles two structures:
+ *   A) Root object with profile keys directly
+ *   B) { temas_cubiertos, listo_para_resumir, extractos: { profile keys } }
+ */
+function normalizeProfileJson(
+  parsed: Record<string, unknown>
+): Record<string, unknown> | null {
+  const rootKeys = Object.keys(parsed)
+  const rootProfileHits = rootKeys.filter(k => PROFILE_ROOT_KEYS.includes(k))
+
+  console.log('[normalizeProfileJson] rootKeys=', rootKeys.length, rootKeys.slice(0,6))
+  console.log('[normalizeProfileJson] rootProfileHits=', rootProfileHits.length)
+
+  // Case B: profile is nested inside extractos
+  if (isMetadataObject(parsed) && typeof parsed.extractos === 'object' && parsed.extractos !== null) {
+    const extractos = parsed.extractos as Record<string, unknown>
+    const extractosHits = Object.keys(extractos).filter(k =>
+      PROFILE_ROOT_KEYS.includes(k) ||
+      ['historia_personal','motivacion_profunda','mercado_objetivo','objeciones','frases','ctas','mision','vision'].some(alias => k.includes(alias))
+    )
+    console.log('[normalizeProfileJson] Case B: extractos keys=', Object.keys(extractos).length, 'hits=', extractosHits.length)
+    if (extractosHits.length >= 3) return extractos
+    return null
+  }
+
+  // Case A: profile keys at root
+  if (rootProfileHits.length >= 3) {
+    return parsed
+  }
+
+  return null
+}
+
+/**
+ * Builds a human-readable Spanish resumen from profile data.
+ * Uses whichever fields are available — never returns empty.
+ */
+function buildResumenFromProfile(profile: Record<string, unknown>): string {
+  const lines: string[] = []
+
+  const get = (key: string): string => {
+    const v = profile[key]
+    if (typeof v === 'string' && v.trim().length > 3) return v.trim()
+    if (Array.isArray(v) && v.length > 0) return (v as string[]).join(', ')
+    return ''
+  }
+
+  const pv    = get('propuesta_de_valor')
+  const hp    = get('historia_personal') || get('historia_profesional')
+  const mo    = get('mercado_objetivo')
+  const tono  = get('tono_comunicacion')
+  const mision = get('mision') || get('mision_profesional')
+  const prod  = get('productos_principales')
+
+  if (pv)    lines.push(`Mi propuesta de valor: ${pv}`)
+  if (hp)    lines.push(`Mi historia: ${hp}`)
+  if (mo)    lines.push(`Mi mercado objetivo: ${mo}`)
+  if (prod)  lines.push(`Productos principales: ${prod}`)
+  if (tono)  lines.push(`Tono de comunicación: ${tono}`)
+  if (mision) lines.push(`Mi misión: ${mision}`)
+
+  const result = lines.join('\n\n')
+  console.log('[buildResumenFromProfile] resumen length=', result.length, 'sections=', lines.length)
+  return result || 'Perfil recuperado. Puedes editar este resumen antes de guardar.'
+}
+
 function tryExtractFinalJson(content: string): RecoveredSummary | null {
   if (!content || typeof content !== 'string') return null
 
-  // Strip markdown code fences
+  // Strip markdown code fences and metadata HTML comments
   const cleaned = content
+    .replace(/<!--METADATA:.*?-->/gs, '')
     .replace(/```json\s*/gi, '')
     .replace(/```\s*/g, '')
     .trim()
 
-  // Profile keys — include aliases that Claude may use
-  const profileKeys = [
-    'historia_personal','motivacion_profunda','mercado_objetivo',
-    'productos_principales','estilo_comunicacion','diferenciadores',
-    'valores','objeciones_frecuentes','frases_propias','ctas_efectivos',
-    'mision','vision','mision_profesional','vision_negocio',
-    'cliente_ideal','cliente_ideal_descripcion','tono_comunicacion',
-    'propuesta_de_valor','historia_profesional',
-  ]
+  // Quick check: must have at least 3 profile key strings anywhere in content
+  const quickHits = PROFILE_ROOT_KEYS.filter(k => cleaned.includes(`"${k}"`))
+  console.log('[tryExtractFinalJson] quickHits=', quickHits.length, quickHits.slice(0, 5))
+  if (quickHits.length < 3) return null
 
-  // Must contain at least 3 profile keys to be considered a final JSON
-  const keyMatches = profileKeys.filter(k => cleaned.includes(`"${k}"`))
-  console.log('[tryExtractFinalJson] keyMatches=', keyMatches.length, keyMatches.slice(0, 5))
-  if (keyMatches.length < 3) return null
-
-  // Extract JSON: find the outermost { } using a stack-based approach
-  // This avoids the greedy regex problem with nested objects
-  let jsonStr: string | null = null
+  // Stack-based extractor: find ALL top-level JSON objects and test each
+  const candidates: string[] = []
   for (let i = 0; i < cleaned.length; i++) {
-    if (cleaned[i] === '{') {
-      let depth = 0
-      let j = i
-      while (j < cleaned.length) {
-        if (cleaned[j] === '{') depth++
-        else if (cleaned[j] === '}') {
-          depth--
-          if (depth === 0) {
-            const candidate = cleaned.slice(i, j + 1)
-            // Only accept if it contains at least 3 profile keys
-            const candidateKeys = profileKeys.filter(k => candidate.includes(`"${k}"`))
-            if (candidateKeys.length >= 3) {
-              jsonStr = candidate
-            }
-            break
-          }
-        }
-        j++
+    if (cleaned[i] !== '{') continue
+    let depth = 0, j = i
+    while (j < cleaned.length) {
+      if (cleaned[j] === '{') depth++
+      else if (cleaned[j] === '}') { depth--; if (depth === 0) { candidates.push(cleaned.slice(i, j + 1)); break } }
+      j++
+    }
+    // After finding a top-level object, skip past it
+    if (depth === 0) i = j
+  }
+
+  console.log('[tryExtractFinalJson] candidates found=', candidates.length)
+
+  for (const candidate of candidates) {
+    try {
+      const parsed = JSON.parse(candidate) as Record<string, unknown>
+      const normalized = normalizeProfileJson(parsed)
+      if (!normalized) {
+        console.log('[tryExtractFinalJson] candidate skipped — not a profile object')
+        continue
       }
-      if (jsonStr) break
+
+      const resumenVisible = buildResumenFromProfile(normalized)
+      console.log('[tryExtractFinalJson] MATCH — profile keys=', Object.keys(normalized).length)
+      return { resumen_visible: resumenVisible, datos_estructurados: normalized }
+    } catch (err) {
+      console.log('[tryExtractFinalJson] parse failed:', (err as Error).message?.slice(0, 60))
     }
   }
 
-  if (!jsonStr) {
-    console.log('[tryExtractFinalJson] no JSON object found in content')
-    return null
-  }
-
-  try {
-    const parsed = JSON.parse(jsonStr) as Record<string, unknown>
-    const keys = Object.keys(parsed)
-    console.log('[tryExtractFinalJson] parsed OK, keys=', keys.length, keys.slice(0, 8))
-
-    // Build a readable resumen from available fields
-    const resumenParts: string[] = []
-    const hp = parsed.historia_personal ?? parsed.historia_profesional
-    const pv = parsed.propuesta_de_valor
-    if (typeof pv === 'string' && pv.length > 10) resumenParts.push(pv)
-    if (typeof hp === 'string' && hp.length > 10) resumenParts.push(hp)
-    const resumenVisible = resumenParts.join(' ').slice(0, 500) || 'Perfil recuperado automáticamente.'
-
-    return { resumen_visible: resumenVisible, datos_estructurados: parsed }
-  } catch (err) {
-    console.error('[tryExtractFinalJson] JSON.parse failed:', err instanceof Error ? err.message : err)
-    return null
-  }
+  console.log('[tryExtractFinalJson] no valid profile JSON found after scanning', candidates.length, 'candidates')
+  return null
 }
 
 /**
@@ -240,37 +305,55 @@ function SummaryReview({
   onRegenerate: () => void
   isLoading: boolean
 }) {
+  const profileKeyCount = Object.keys(summary.datos_estructurados).length
+  const hasResumen = summary.resumen_visible.trim().length > 5
+
   return (
     <div className="flex flex-col h-full p-4 gap-4">
-      <div className="flex-1 overflow-y-auto">
-        <h3 className="font-semibold text-gray-800 mb-3">Resumen de tu perfil IA</h3>
+      <div className="flex-1 overflow-y-auto space-y-3">
+        <div>
+          <h3 className="font-semibold text-gray-800 mb-1">✓ Entrevista completada</h3>
+          <p className="text-xs text-gray-500">
+            Se recuperaron {profileKeyCount} campos de tu perfil estratégico.
+            Revisa y edita el resumen antes de guardar.
+          </p>
+        </div>
+
+        {!hasResumen && (
+          <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
+            El resumen está vacío. Puedes escribir uno o usar "Regenerar" para que la IA lo cree.
+          </div>
+        )}
+
         <textarea
           value={summary.resumen_visible}
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onEdit(e.target.value)}
           className="w-full h-48 p-3 border border-gray-200 rounded-xl text-sm text-gray-700 resize-none focus:outline-none focus:ring-2 focus:ring-brand-navy-300"
-          placeholder="Resumen generado..."
+          placeholder="Escribe o edita tu resumen de perfil aquí..."
         />
-        <p className="text-xs text-gray-400 mt-1">
-          Puedes editar el resumen antes de guardar. Este texto se usará para personalizar todo el contenido de la plataforma.
+        <p className="text-xs text-gray-400">
+          Este texto personaliza tu contenido, copilot y recomendaciones en toda la plataforma.
         </p>
       </div>
-      <div className="flex gap-2 shrink-0">
+      <div className="flex flex-col gap-2 shrink-0">
+        {/* Primary action — always visible */}
+        <Button
+          size="sm"
+          onClick={onApprove}
+          disabled={isLoading}
+          className="w-full"
+        >
+          {isLoading ? 'Guardando...' : '✓ Guardar perfil y continuar'}
+        </Button>
+        {/* Secondary action */}
         <Button
           variant="secondary"
           size="sm"
           onClick={onRegenerate}
           disabled={isLoading}
-          className="flex-1"
+          className="w-full"
         >
-          Regenerar
-        </Button>
-        <Button
-          size="sm"
-          onClick={onApprove}
-          disabled={isLoading}
-          className="flex-1"
-        >
-          {isLoading ? 'Guardando...' : 'Guardar perfil IA'}
+          Regenerar resumen con IA
         </Button>
       </div>
     </div>
@@ -456,19 +539,30 @@ export function InterviewChat({ initialSessionId, initialSession, onComplete, on
   )
 
   async function handleApprove() {
+    const sid = sessionId ?? initialSession?.sessionId ?? initialSessionId ?? ''
+    console.log('[handleApprove] sid=', sid, 'resumen length=', summary?.resumen_visible?.length ?? 0,
+      'datos keys=', Object.keys(summary?.datos_estructurados ?? {}).length)
+
+    if (!sid) {
+      toast.error('Error', 'No se encontró la sesión. Recarga la página.')
+      return
+    }
+
     approveSummary()
     setIsSaving(true)
 
     const result = await saveInterviewResultAction({
       datos_estructurados: summary!.datos_estructurados,
       resumen_visible: summary!.resumen_visible,
-      session_id: sessionId ?? initialSessionId ?? '',
+      session_id: sid,
     })
 
     if (result.success) {
+      console.log('[handleApprove] guardado OK — avanzando al paso 4')
       toast.success('¡Perfil guardado!', 'Tu Perfil de IA está listo.')
       onComplete()
     } else {
+      console.error('[handleApprove] saveInterviewResultAction failed:', result.error)
       toast.error('Error al guardar', result.error)
       setIsSaving(false)
     }
