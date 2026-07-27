@@ -53,11 +53,14 @@ export default async function OnboardingPage() {
   // Create a session if none exists
   let sessionId = sess?.id ?? ''
   if (!sessionId) {
-    const { data: newSess } = await client
+    const { data: newSess, error: sessError } = await client
       .from('interview_sessions')
-      .insert({ user_id: user.id, status: 'in_progress' })
+      .insert({ user_id: user.id, status: 'en_progreso' })
       .select('id')
       .single()
+    if (sessError) {
+      console.error('[Onboarding] Failed to create interview_session:', sessError.message)
+    }
     sessionId = (newSess as { id?: string } | null)?.id ?? ''
   }
 
