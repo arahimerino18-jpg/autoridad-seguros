@@ -311,8 +311,9 @@ function SummaryReview({
   const hasResumen = summary.resumen_visible.trim().length > 5
 
   return (
-    <div className="flex flex-col h-full p-4 gap-4">
-      <div className="flex-1 overflow-y-auto space-y-3">
+    <div className="flex flex-col h-full">
+      {/* Scrollable content area */}
+      <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
         <div>
           <h3 className="font-semibold text-gray-800 mb-1">✓ Entrevista completada</h3>
           <p className="text-xs text-gray-500">
@@ -323,31 +324,31 @@ function SummaryReview({
 
         {!hasResumen && (
           <div className="rounded-lg bg-amber-50 border border-amber-200 px-3 py-2 text-xs text-amber-700">
-            El resumen está vacío. Puedes escribir uno o usar "Regenerar" para que la IA lo cree.
+            El resumen está vacío. Puedes escribir uno o usar &quot;Regenerar&quot; para que la IA lo cree.
           </div>
         )}
 
         <textarea
           value={summary.resumen_visible}
           onChange={(e: React.ChangeEvent<HTMLTextAreaElement>) => onEdit(e.target.value)}
-          className="w-full h-48 p-3 border border-gray-200 rounded-xl text-sm text-gray-700 resize-none focus:outline-none focus:ring-2 focus:ring-brand-navy-300"
+          className="w-full h-36 p-3 border border-gray-200 rounded-xl text-sm text-gray-700 resize-none focus:outline-none focus:ring-2 focus:ring-brand-navy-300"
           placeholder="Escribe o edita tu resumen de perfil aquí..."
         />
         <p className="text-xs text-gray-400">
           Este texto personaliza tu contenido, copilot y recomendaciones en toda la plataforma.
         </p>
       </div>
-      <div className="flex flex-col gap-2 shrink-0">
-        {/* Primary action — always visible */}
+
+      {/* Buttons — pinned to bottom, never clipped */}
+      <div className="flex flex-col gap-2 p-4 pt-2 border-t border-gray-100 bg-white shrink-0">
         <Button
           size="sm"
           onClick={onApprove}
           disabled={isLoading}
           className="w-full"
         >
-          {isLoading ? 'Guardando...' : '✓ Guardar perfil y continuar'}
+          {isLoading ? 'Guardando perfil...' : '✓ Guardar perfil y continuar'}
         </Button>
-        {/* Secondary action */}
         <Button
           variant="secondary"
           size="sm"
