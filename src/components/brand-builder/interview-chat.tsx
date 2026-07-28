@@ -345,7 +345,8 @@ function SummaryReview({
           size="sm"
           onClick={onApprove}
           disabled={isLoading}
-          className="w-full"
+          aria-busy={isLoading}
+          className="w-full bg-[#1B2E6B] hover:bg-[#16255A] border border-[#1B2E6B] text-white focus-visible:ring-2 focus-visible:ring-[#1B2E6B]/40 focus-visible:ring-offset-2 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           {isLoading ? 'Guardando perfil...' : '✓ Guardar perfil y continuar'}
         </Button>
