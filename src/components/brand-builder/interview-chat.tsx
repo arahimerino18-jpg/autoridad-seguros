@@ -142,9 +142,11 @@ function buildResumenFromProfile(profile: Record<string, unknown>): string {
 function tryExtractFinalJson(content: string): RecoveredSummary | null {
   if (!content || typeof content !== 'string') return null
 
-  // Strip markdown code fences and metadata HTML comments
+  // Strip only markdown code fences — do NOT strip <!--METADATA:--> here.
+  // The profile JSON lives inside the METADATA comment block.
+  // Removing it before stack extraction was the regression in 8d43c97.
+  // normalizeProfileJson handles separating metadata wrapper from profile data.
   const cleaned = content
-    .replace(/<!--METADATA:.*?-->/gs, '')
     .replace(/```json\s*/gi, '')
     .replace(/```\s*/g, '')
     .trim()
