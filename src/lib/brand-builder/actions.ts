@@ -331,6 +331,97 @@ const VALID_INTEL_COLUMNS = new Set([
   'canal_preferido',
 ])
 
+// ─── Insurance product alias map ──────────────────────────────────────────────
+// Maps common strings Claude uses → valid insurance_product enum values.
+// Comparison is done after lowercasing and removing diacritics.
+
+const INSURANCE_PRODUCT_ALIASES: Array<[RegExp, string]> = [
+  [/^medicare$/,                                          'medicare'],
+  [/^(aca|obamacare|seguro de salud|affordable care)$/,  'aca'],
+  [/^iul$/,                                               'iul'],
+  [/^(gastos finales|final expense|final_expense)$/,      'final_expense'],
+  [/^(seguro de vida|vida|life|life insurance)$/,         'life'],
+  [/^(proteccion hipotecaria|protección hipotecaria|mortgage protection|mortgage)$/, 'mortgage'],
+  [/^general$/,                                           'general'],
+]
+
+function removeDiacritics(s: string): string {
+  return s.normalize('NFD').replace(/[̀-ͯ]/g, '')
+}
+
+function mapInsuranceProduct(raw: string): string | null {
+  const normalized = removeDiacritics(raw.trim().toLowerCase())
+  for (const [pattern, value] of INSURANCE_PRODUCT_ALIASES) {
+    if (pattern.test(normalized)) return value
+  }
+  return null
+}
+
+// ─── Column-specific normalization ────────────────────────────────────────────
+// Called on each intelData field before sending to Supabase.
+// Rules per column type:
+//   text           → pass through as-is
+//   text[]         → string → [string.trim()] (never split narratives by comma)
+//                    array  → clean each element, remove empty
+//   insurance_product[] → alias-map then filter to valid enum values
+//   boolean        → always set as literal true after this function
+
+// Columns that are text[] and must receive an array
+const TEXT_ARRAY_INTEL_COLUMNS = new Set([
+  'diferenciadores', 'frases_propias', 'palabras_a_evitar', 'ctas_efectivos',
+  'comunidades', 'nichos_secundarios', 'problemas_que_resuelve',
+  'hashtags_recurrentes', 'temas_de_alto_rendimiento', 'momentos_cierre',
+  'tipos_contenido_preferidos', 'valores', 'certificaciones', 'estados_licencia',
+  'idiomas',
+])
+
+function normalizeIntelValue(key: string, value: unknown): unknown {
+  if (value === undefined) return undefined
+  if (value === null) return null
+
+  // insurance_product[] — map aliases then filter to valid enum values
+  if (key === 'productos_principales') {
+    const tokens: string[] = Array.isArray(value)
+      ? (value as unknown[]).map(v => String(v))
+      : typeof value === 'string' && value.trim()
+        ? value.split(/[,;]\s*/)   // split is safe here — these are short product labels
+        : []
+
+    const valid: string[] = []
+    for (const token of tokens) {
+      const mapped = mapInsuranceProduct(token)
+      if (mapped) {
+        valid.push(mapped)
+      } else {
+        console.warn('[normalizeIntelValue] productos_principales: unrecognized value:', JSON.stringify(token))
+      }
+    }
+    return valid  // may be empty if none matched — still a valid array
+  }
+
+  // text[] columns — narrative strings become a single-element array
+  if (TEXT_ARRAY_INTEL_COLUMNS.has(key)) {
+    if (Array.isArray(value)) {
+      return (value as unknown[])
+        .map(v => String(v).trim())
+        .filter(Boolean)
+    }
+    if (typeof value === 'string') {
+      const trimmed = value.trim()
+      return trimmed ? [trimmed] : []  // whole string as one element — no comma split
+    }
+    return []
+  }
+
+  // text columns (historia_personal, historia_profesional, mercado_objetivo, tono_comunicacion, etc.)
+  // Arrays: join into a single string. Primitives: stringify.
+  if (Array.isArray(value)) {
+    return (value as unknown[]).map(v => String(v).trim()).filter(Boolean).join(' ')
+  }
+
+  return value  // boolean, number, jsonb, text → pass through
+}
+
 export async function saveInterviewResultAction(data: InterviewSaveData): Promise<ActionResult> {
   const { user, supabase } = await getAuthenticatedUser()
   if (!user) return { success: false, error: 'Sesión expirada.' }
@@ -358,10 +449,22 @@ export async function saveInterviewResultAction(data: InterviewSaveData): Promis
     }
   }
 
-  console.log('[saveInterviewResultAction] intelData keys:', Object.keys(intelData))
+  console.log('[saveInterviewResultAction] intelData keys before normalize:', Object.keys(intelData))
   console.log('[saveInterviewResultAction] brandData keys:', Object.keys(brandData))
 
-  // Mark interview as completed
+  // Normalize each intel field to match the DB column type before sending to Supabase.
+  // This prevents 22P02 (malformed array literal) when Claude returns strings
+  // for text[] or insurance_product[] columns.
+  for (const key of Object.keys(intelData)) {
+    intelData[key] = normalizeIntelValue(key, intelData[key])
+  }
+
+  console.log('[saveInterviewResultAction] intelData after normalize:', {
+    productos_principales: intelData.productos_principales,
+    diferenciadores: intelData.diferenciadores,
+  })
+
+  // Mark interview as completed — always a literal boolean true
   intelData.entrevista_completada = true
   intelData.entrevista_fecha = new Date().toISOString()
 
