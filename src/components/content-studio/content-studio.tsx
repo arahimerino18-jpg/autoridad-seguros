@@ -82,8 +82,8 @@ function ChannelGrid({
                   className={cn(
                     'flex items-center gap-2 px-3 py-2 rounded-xl border text-left transition-all',
                     selected === channel.id
-                      ? 'bg-brand-navy-500 text-white border-brand-navy-500'
-                      : 'bg-white border-gray-200 hover:border-brand-navy-300 text-gray-700'
+                      ? 'bg-[#1B2E6B] text-white border-[#1B2E6B]'
+                      : 'bg-white border-gray-200 hover:border-[#6B88C4] text-gray-700'
                   )}
                 >
                   <span className="text-base">{channel.emoji}</span>
@@ -149,14 +149,14 @@ function IntentForm({
       {usageMax !== -1 && (
         <div className="h-1 bg-gray-100 rounded-full overflow-hidden">
           <div
-            className={cn('h-full rounded-full', atLimit ? 'bg-danger' : 'bg-brand-navy-500')}
+            className={cn('h-full rounded-full', atLimit ? 'bg-danger' : 'bg-[#1B2E6B]')}
             style={{ width: `${Math.min(100, (usageCount / usageMax) * 100)}%` }}
           />
         </div>
       )}
 
       {/* Canal indicator */}
-      <div className="flex items-center gap-2 bg-brand-navy-50 rounded-xl px-3 py-2">
+      <div className="flex items-center gap-2 bg-[#EEF1F8] rounded-xl px-3 py-2">
         <span className="text-lg">{channel.emoji}</span>
         <span className="text-sm font-medium text-brand-navy-700">{channel.label}</span>
       </div>
@@ -171,7 +171,7 @@ function IntentForm({
           onChange={(e) => setTema(e.target.value)}
           rows={3}
           placeholder={`Ej: El AEP de Medicare empieza el 15 de octubre — familias cubanas en Miami que necesitan revisar su plan antes de que sea tarde`}
-          className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy-500 resize-none"
+          className="w-full rounded-xl border border-gray-300 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#1B2E6B] resize-none"
         />
       </div>
 
@@ -187,7 +187,7 @@ function IntentForm({
               className={cn(
                 'flex flex-col items-center gap-0.5 p-2 rounded-lg border transition-all',
                 producto === p.value
-                  ? 'bg-brand-navy-500 text-white border-brand-navy-500'
+                  ? 'bg-[#1B2E6B] text-white border-[#1B2E6B]'
                   : 'bg-white text-gray-600 border-gray-200 hover:border-gray-300'
               )}
             >
@@ -210,7 +210,7 @@ function IntentForm({
               className={cn(
                 'text-left px-3 py-2 rounded-xl border transition-all',
                 objetivo === o.value
-                  ? 'bg-brand-navy-500 text-white border-brand-navy-500'
+                  ? 'bg-[#1B2E6B] text-white border-[#1B2E6B]'
                   : 'bg-white border-gray-200 hover:border-gray-300'
               )}
             >
@@ -235,7 +235,7 @@ function IntentForm({
           onChange={(e) => setInstruccion(e.target.value)}
           maxLength={200}
           placeholder="Ej: Menciona que hay planes sin costo mensual"
-          className="w-full h-9 rounded-lg border border-gray-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-brand-navy-500"
+          className="w-full h-9 rounded-lg border border-gray-300 px-3 text-sm focus:outline-none focus:ring-2 focus:ring-[#1B2E6B]"
         />
       </div>
 
@@ -401,7 +401,7 @@ export function ContentStudio({ agentHandle, usageCount, usageMax }: ContentStud
         {/* Streaming state */}
         {(isGenerating || isModifying) && !state.parsedOutput && (
           <div className="flex flex-col items-center justify-center py-16 gap-4">
-            <div className="w-12 h-12 rounded-2xl bg-brand-navy-50 flex items-center justify-center">
+            <div className="w-12 h-12 rounded-2xl bg-[#EEF1F8] flex items-center justify-center">
               <span className="text-2xl animate-pulse">{channel.emoji}</span>
             </div>
             <div className="text-center">
@@ -450,7 +450,7 @@ export function ContentStudio({ agentHandle, usageCount, usageMax }: ContentStud
                     key={mod.id}
                     onClick={() => void modify(mod.id)}
                     disabled={isModifying}
-                    className="text-xs px-3 py-1.5 rounded-full border border-gray-200 bg-white hover:border-brand-navy-300 hover:bg-brand-navy-50 transition-all disabled:opacity-50"
+                    className="text-xs px-3 py-1.5 rounded-full border border-gray-200 bg-white hover:border-[#6B88C4] hover:bg-[#EEF1F8] transition-all disabled:opacity-50"
                   >
                     {mod.label}
                   </button>
@@ -469,7 +469,7 @@ export function ContentStudio({ agentHandle, usageCount, usageMax }: ContentStud
                     value={customInstruction}
                     onChange={(e) => setCustomInstruction(e.target.value)}
                     placeholder="Ej: Agrega una historia sobre una clienta de 67 años"
-                    className="flex-1 h-9 text-sm rounded-lg border border-gray-300 px-3 focus:outline-none focus:ring-2 focus:ring-brand-navy-500"
+                    className="flex-1 h-9 text-sm rounded-lg border border-gray-300 px-3 focus:outline-none focus:ring-2 focus:ring-[#1B2E6B]"
                   />
                   <Button
                     size="sm"
@@ -514,7 +514,7 @@ export function ContentStudio({ agentHandle, usageCount, usageMax }: ContentStud
                       key={id}
                       onClick={() => handleAdaptToChannel(id)}
                       disabled={isGenerating}
-                      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-gray-200 bg-white hover:border-brand-navy-300 hover:bg-brand-navy-50 transition-all"
+                      className="flex items-center gap-1.5 text-xs px-3 py-1.5 rounded-full border border-gray-200 bg-white hover:border-[#6B88C4] hover:bg-[#EEF1F8] transition-all"
                     >
                       <span>{ch.emoji}</span>
                       <span>{ch.label}</span>
