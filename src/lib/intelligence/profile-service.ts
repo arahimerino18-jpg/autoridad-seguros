@@ -96,8 +96,40 @@ export async function updateAgentProfile(
   const client = supabase as unknown as AnyClient
   const intelSource = params.intelSource ?? CHANGE_TO_INTEL_SOURCE[params.sourceType]
 
-  // 1. Read current values for history recording (single query for all affected fields)
-  const fieldNames = Object.keys(params.campos)
+  // 1. Read current values for history recording
+  // Only select fields that exist as columns — unknown fields cause 400 errors
+  const KNOWN_COLUMNS = new Set([
+    'id','user_id','estilo_escritura','tono_comunicacion','nivel_formalidad','usa_emojis',
+    'longitud_preferida','frases_propias','palabras_a_evitar','historias_personales',
+    'propuesta_de_valor','productos_principales','mercado_objetivo','ciudad_estado',
+    'idiomas','comunidades','objeciones_frecuentes','ctas_efectivos','momentos_cierre',
+    'tipos_contenido_preferidos','horarios_optimos','hashtags_recurrentes',
+    'temas_de_alto_rendimiento','color_primario','color_secundario','tagline',
+    'instagram_handle','historia_profesional','historia_personal','mision','vision',
+    'valores','diferenciadores','tipo_humor','nivel_emocional','usa_historias',
+    'usa_estadisticas','cliente_ideal_descripcion','cliente_ideal_json',
+    'cliente_ideal_version','cliente_ideal_fecha','nichos_secundarios',
+    'problemas_que_resuelve','metas_negocio','fuente_leads_principal',
+    'tasa_cierre_estimada','ticket_promedio_usd','entrevista_completada','entrevista_fecha',
+    'inferencias_pendientes','perfil_ia_revisado_en','canal_preferido',
+    'score_perfil_completitud','version','ultima_actualizacion_ia','created_at','updated_at',
+    'tono_source','estilo_source','frases_source','objeciones_source','ctas_source',
+    'mercado_source','cliente_ideal_source','canal_preferido_source',
+    'inference_rejection_log','total_contenidos_generados','total_contenidos_publicados',
+    'total_objections_handled','patron_edicion_json',
+  ])
+
+  const allFieldNames = Object.keys(params.campos)
+  const fieldNames = allFieldNames.filter(f => KNOWN_COLUMNS.has(f))
+  const skipped = allFieldNames.filter(f => !KNOWN_COLUMNS.has(f))
+  if (skipped.length > 0) {
+    console.warn('[updateAgentProfile] skipping unknown columns:', skipped)
+  }
+
+  if (fieldNames.length === 0) {
+    return { success: true, historyIds: [] }  // nothing valid to update
+  }
+
   const { data: currentData } = await client
     .from('agent_intelligence_profiles')
     .select(fieldNames.join(', '))
@@ -119,13 +151,25 @@ export async function updateAgentProfile(
     }
   }
 
-  // 3. Write to database
+  // 3. Write to database — only include known columns in payload
+  const safePayload: Record<string, unknown> = { updated_at: updatePayload.updated_at }
+  for (const [k, v] of Object.entries(updatePayload)) {
+    if (KNOWN_COLUMNS.has(k) || k.endsWith('_source')) safePayload[k] = v
+  }
+
   const { error } = await client
     .from('agent_intelligence_profiles')
-    .update(updatePayload)
+    .update(safePayload)
     .eq('user_id', user.id)
 
   if (error) {
+    console.error('[updateAgentProfile] Supabase error', {
+      code: (error as {code?: string}).code,
+      message: error.message,
+      details: (error as {details?: string}).details,
+      hint: (error as {hint?: string}).hint,
+      payload_keys: Object.keys(safePayload),
+    })
     return { success: false, error: error.message, historyIds: [] }
   }
 

@@ -298,6 +298,36 @@ export interface InterviewSaveData {
   session_id: string
 }
 
+// Alias mapping: short names used by Claude in METADATA → real column names in agent_intelligence_profiles
+const INTERVIEW_KEY_ALIASES: Record<string, string> = {
+  objeciones:          'objeciones_frecuentes',
+  frases:              'frases_propias',
+  ctas:                'ctas_efectivos',
+  mision_profesional:  'mision',
+  vision_negocio:      'vision',
+  cliente_ideal:       'cliente_ideal_descripcion',
+  estilo_comunicacion: 'tono_comunicacion',
+  motivacion_profunda: 'historia_profesional',
+  historia:            'historia_personal',
+}
+
+// Exact set of valid columns in agent_intelligence_profiles
+// Any key not in this set is silently skipped to prevent 400 errors
+const VALID_INTEL_COLUMNS = new Set([
+  'estilo_escritura','tono_comunicacion','nivel_formalidad','usa_emojis',
+  'longitud_preferida','frases_propias','palabras_a_evitar','historias_personales',
+  'propuesta_de_valor','productos_principales','mercado_objetivo','ciudad_estado',
+  'idiomas','comunidades','objeciones_frecuentes','ctas_efectivos','momentos_cierre',
+  'tipos_contenido_preferidos','horarios_optimos','hashtags_recurrentes',
+  'temas_de_alto_rendimiento','color_primario','color_secundario','tagline',
+  'instagram_handle','historia_profesional','historia_personal','mision','vision',
+  'valores','diferenciadores','tipo_humor','nivel_emocional','usa_historias',
+  'usa_estadisticas','cliente_ideal_descripcion','nichos_secundarios',
+  'problemas_que_resuelve','metas_negocio','fuente_leads_principal',
+  'tasa_cierre_estimada','ticket_promedio_usd','entrevista_completada','entrevista_fecha',
+  'canal_preferido',
+])
+
 export async function saveInterviewResultAction(data: InterviewSaveData): Promise<ActionResult> {
   const { user, supabase } = await getAuthenticatedUser()
   if (!user) return { success: false, error: 'Sesión expirada.' }
@@ -312,35 +342,45 @@ export async function saveInterviewResultAction(data: InterviewSaveData): Promis
   const brandData: Record<string, unknown> = {}
   const intelData: Record<string, unknown> = {}
 
-  for (const [key, value] of Object.entries(data.datos_estructurados)) {
+  for (const [rawKey, value] of Object.entries(data.datos_estructurados)) {
+    // Resolve alias (e.g. 'objeciones' → 'objeciones_frecuentes')
+    const key = INTERVIEW_KEY_ALIASES[rawKey] ?? rawKey
+
     if (brandKitFields.includes(key)) {
       brandData[key] = value
-    } else {
+    } else if (VALID_INTEL_COLUMNS.has(key)) {
       intelData[key] = value
+    } else {
+      console.log('[saveInterviewResultAction] skipping unknown key:', rawKey, '→', key)
     }
   }
+
+  console.log('[saveInterviewResultAction] intelData keys:', Object.keys(intelData))
+  console.log('[saveInterviewResultAction] brandData keys:', Object.keys(brandData))
 
   // Mark interview as completed
   intelData.entrevista_completada = true
   intelData.entrevista_fecha = new Date().toISOString()
 
-  // Save to both tables
-  const results = await Promise.allSettled([
-    Object.keys(intelData).length > 0
-      ? updateIntelProfile(supabase, user.id, intelData)
-      : Promise.resolve({ error: null }),
-    Object.keys(brandData).length > 0
-      ? updateBrandKit(supabase, user.id, brandData)
-      : Promise.resolve({ error: null }),
-  ])
+  // Save intel profile first — only proceed if it succeeds
+  if (Object.keys(intelData).length > 0) {
+    const intelResult = await updateIntelProfile(supabase, user.id, intelData)
+    if (intelResult.error) {
+      // Error is already logged by updateAgentProfile with full Supabase details
+      console.error('[saveInterviewResultAction] intel profile update failed:', intelResult.error)
+      return { success: false, error: 'Error al guardar el perfil de la entrevista.' }
+    }
+  }
 
-  const hasError = results.some(
-    (r) => r.status === 'rejected' || (r.status === 'fulfilled' && r.value?.error)
-  )
+  // Save brand kit (non-critical — don't block on failure)
+  if (Object.keys(brandData).length > 0) {
+    const brandResult = await updateBrandKit(supabase, user.id, brandData)
+    if (brandResult.error) {
+      console.warn('[saveInterviewResultAction] brand kit update failed (non-critical):', brandResult.error)
+    }
+  }
 
-  if (hasError) return { success: false, error: 'Error al guardar el perfil de la entrevista.' }
-
-  // Mark interview session as approved
+  // Mark interview session as approved — only after intel profile saved successfully
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   await (supabase.from('interview_sessions') as any)
     .update({ status: 'aprobado', es_activa: false })

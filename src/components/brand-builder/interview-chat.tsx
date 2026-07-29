@@ -555,19 +555,26 @@ export function InterviewChat({ initialSessionId, initialSession, onComplete, on
     approveSummary()
     setIsSaving(true)
 
-    const result = await saveInterviewResultAction({
-      datos_estructurados: summary!.datos_estructurados,
-      resumen_visible: summary!.resumen_visible,
-      session_id: sid,
-    })
+    try {
+      const result = await saveInterviewResultAction({
+        datos_estructurados: summary!.datos_estructurados,
+        resumen_visible: summary!.resumen_visible,
+        session_id: sid,
+      })
 
-    if (result.success) {
-      console.log('[handleApprove] guardado OK — avanzando al paso 4')
-      toast.success('¡Perfil guardado!', 'Tu Perfil de IA está listo.')
-      onComplete()
-    } else {
-      console.error('[handleApprove] saveInterviewResultAction failed:', result.error)
-      toast.error('Error al guardar', result.error)
+      if (result.success) {
+        console.log('[handleApprove] guardado OK — avanzando al paso 4')
+        toast.success('¡Perfil guardado!', 'Tu Perfil de IA está listo.')
+        onComplete()
+      } else {
+        console.error('[handleApprove] saveInterviewResultAction failed:', result.error)
+        toast.error('Error al guardar', result.error ?? 'Error desconocido')
+        setIsSaving(false)
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : 'Error inesperado al guardar'
+      console.error('[handleApprove] unexpected error:', msg, err)
+      toast.error('Error al guardar', msg)
       setIsSaving(false)
     }
   }
