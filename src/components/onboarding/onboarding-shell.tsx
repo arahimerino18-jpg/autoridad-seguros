@@ -450,12 +450,14 @@ function Step4FirstValue({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          tipo: 'instagram_post',
-          producto: primaryProduct,
-          canal: 'instagram',
-          objetivo: 'educacion',
-          instrucciones_adicionales: 'Este es el primer contenido para establecer mi autoridad digital. Hazlo memorable, auténtico y específico para la comunidad hispana.',
-          onboarding_mode: true,
+          action: 'generate',
+          params: {
+            tipo: 'instagram_post',
+            producto: primaryProduct,
+            canal: 'instagram',
+            objetivo: 'educacion',
+            instrucciones_adicionales: 'Este es el primer contenido para establecer mi autoridad digital. Hazlo memorable, auténtico y específico para la comunidad hispana.',
+          },
         }),
       })
 
