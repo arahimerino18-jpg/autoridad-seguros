@@ -87,6 +87,22 @@ export async function POST(request: NextRequest) {
 
   // ── Generate or Modify (streaming SSE) ───────────────────────────────────
   if (action === 'generate' || action === 'modify') {
+    console.log('[content-studio] action=', action, 'params keys=', Object.keys(params))
+
+    // Validate required fields before hitting the engine — prevents silent empty stream
+    if (action === 'generate') {
+      const missing: string[] = []
+      if (!params.channelId) missing.push('channelId')
+      if (!params.producto)  missing.push('producto')
+      if (!params.objetivo)  missing.push('objetivo')
+      if (missing.length > 0) {
+        console.error('[content-studio] missing required params:', missing, 'received:', params)
+        return NextResponse.json({
+          error: `Parámetros faltantes: ${missing.join(', ')}. Revisa el payload.`
+        }, { status: 400 })
+      }
+    }
+
     // Check content_studio usage limit
     const limit = await checkUsageLimit(user.id, 'content_studio', supabase)
     if (!limit.allowed) {
@@ -123,12 +139,17 @@ export async function POST(request: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         try {
+          console.log('[content-studio] stream starting, channelId=', params.channelId, 'userId=', user.id)
+          let chunkCount = 0
           for await (const chunk of runContentEngine(engineParams)) {
             fullOutput += chunk
+            chunkCount++
+            if (chunkCount === 1) console.log('[content-studio] first chunk received, length=', chunk.length)
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ text: chunk })}\n\n`)
             )
           }
+          console.log('[content-studio] stream complete, total chunks=', chunkCount, 'output length=', fullOutput.length)
 
           // Log usage after successful generation
           await logUsage(user.id, 'content_studio', supabase)
@@ -174,9 +195,17 @@ export async function POST(request: NextRequest) {
           controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Error al generar contenido'
+          console.error('[content-studio] stream error:', {
+            message,
+            stack: err instanceof Error ? err.stack?.slice(0, 300) : undefined,
+            channelId: params.channelId,
+            action,
+          })
+          // Always emit the error as a visible SSE event — never return 200 with empty stream
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ error: message })}\n\n`)
+            encoder.encode(`data: ${JSON.stringify({ error: message, fatal: true })}\n\n`)
           )
+          controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         } finally {
           controller.close()
         }

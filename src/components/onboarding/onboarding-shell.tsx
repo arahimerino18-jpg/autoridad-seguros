@@ -452,11 +452,11 @@ function Step4FirstValue({
         body: JSON.stringify({
           action: 'generate',
           params: {
-            tipo: 'instagram_post',
+            channelId: 'instagram_post',          // required by content-engine
             producto: primaryProduct,
-            canal: 'instagram',
-            objetivo: 'educacion',
-            instrucciones_adicionales: 'Este es el primer contenido para establecer mi autoridad digital. Hazlo memorable, auténtico y específico para la comunidad hispana.',
+            objetivo: 'educar',                   // enum: 'educar'|'conectar'|'convertir'|'retener'
+            tema: 'educación sobre seguros',      // required — brief topic for the post
+            instruccion_extra: 'Este es el primer contenido para establecer mi autoridad digital. Hazlo memorable, auténtico y específico para la comunidad hispana.',
           },
         }),
       })
@@ -478,10 +478,15 @@ function Step4FirstValue({
           const raw = line.slice(6)
           if (raw === '[DONE]') break
           try {
-            const msg = JSON.parse(raw) as { text?: string; done?: boolean; content?: string }
+            const msg = JSON.parse(raw) as { text?: string; done?: boolean; content?: string; error?: string; fatal?: boolean }
+            if (msg.error) throw new Error(msg.error)
             if (msg.text) { fullText += msg.text; setResult(fullText) }
             if (msg.done && msg.content) { setResult(msg.content); fullText = msg.content }
-          } catch { /* ignore */ }
+          } catch (parseErr) {
+            if (parseErr instanceof Error && parseErr.message !== 'Unexpected end of JSON input') {
+              throw parseErr  // propagate real errors
+            }
+          }
         }
       }
 
