@@ -34,7 +34,10 @@ async function getAuthenticatedUser() {
 async function updateIntelProfile(_supabase: unknown, _userId: string, data: Record<string, unknown>, origen = 'brand_builder') {
   // Delegates to the centralized profile service (Phase 14)
   const result = await updateAgentProfileDeclared(data, origen)
-  return { error: result.error ? new Error(result.error) : null }
+  return {
+    error: result.error ? new Error(result.error) : null,
+    supabaseError: result.supabaseError,  // propagate full Supabase error for diagnostics
+  }
 }
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -366,9 +369,33 @@ export async function saveInterviewResultAction(data: InterviewSaveData): Promis
   if (Object.keys(intelData).length > 0) {
     const intelResult = await updateIntelProfile(supabase, user.id, intelData)
     if (intelResult.error) {
-      // Error is already logged by updateAgentProfile with full Supabase details
-      console.error('[saveInterviewResultAction] intel profile update failed:', intelResult.error)
-      return { success: false, error: 'Error al guardar el perfil de la entrevista.' }
+      const se = intelResult.supabaseError
+      // Log full Supabase error server-side (never includes tokens or sensitive values)
+      console.error('[saveInterviewResultAction] Supabase error', {
+        code:            se?.code,
+        message:         se?.message ?? intelResult.error.message,
+        details:         se?.details,
+        hint:            se?.hint,
+        status:          se?.status,
+        statusCode:      se?.statusCode,
+        operation:       'UPDATE agent_intelligence_profiles',
+        attemptedFields: Object.keys(intelData).filter(k => k !== 'entrevista_fecha'),
+      })
+      // Return debug info to client for temporary diagnosis (remove before production)
+      return {
+        success: false as const,
+        error: 'Error al guardar el perfil de la entrevista.',
+        debug: {
+          code:            se?.code,
+          message:         se?.message ?? intelResult.error.message,
+          details:         se?.details,
+          hint:            se?.hint,
+          status:          se?.status,
+          statusCode:      se?.statusCode,
+          operation:       'UPDATE agent_intelligence_profiles',
+          attemptedFields: Object.keys(intelData).filter(k => k !== 'entrevista_fecha'),
+        },
+      } as ActionResult
     }
   }
 

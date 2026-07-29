@@ -47,10 +47,20 @@ export interface UpdateAgentProfileParams {
   intelSource?: IntelSource     // Override the _source value written alongside the field
 }
 
+export interface SupabaseErrorDetail {
+  code?: string
+  message: string
+  details?: string
+  hint?: string
+  status?: number
+  statusCode?: number
+}
+
 export interface UpdateAgentProfileResult {
   success: boolean
   error?: string
-  historyIds: (string | null)[]  // IDs of created history entries (null if recording failed)
+  supabaseError?: SupabaseErrorDetail  // full Supabase error for diagnostic propagation
+  historyIds: (string | null)[]
 }
 
 // ─── Mapping: changeSource → IntelSource ─────────────────────────────────────
@@ -163,14 +173,20 @@ export async function updateAgentProfile(
     .eq('user_id', user.id)
 
   if (error) {
+    const supabaseError: SupabaseErrorDetail = {
+      code:       (error as {code?: string}).code,
+      message:    error.message,
+      details:    (error as {details?: string}).details,
+      hint:       (error as {hint?: string}).hint,
+      status:     (error as {status?: number}).status,
+      statusCode: (error as {statusCode?: number}).statusCode,
+    }
     console.error('[updateAgentProfile] Supabase error', {
-      code: (error as {code?: string}).code,
-      message: error.message,
-      details: (error as {details?: string}).details,
-      hint: (error as {hint?: string}).hint,
-      payload_keys: Object.keys(safePayload),
+      ...supabaseError,
+      operation: 'UPDATE agent_intelligence_profiles',
+      attemptedFields: Object.keys(safePayload).filter(k => k !== 'updated_at'),
     })
-    return { success: false, error: error.message, historyIds: [] }
+    return { success: false, error: error.message, supabaseError, historyIds: [] }
   }
 
   // 4. Record history for each field (non-blocking — failures don't break the write)
