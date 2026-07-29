@@ -73,26 +73,26 @@ const CHANGE_TO_INTEL_SOURCE: Record<IntelProfileChangeSource, IntelSource> = {
   importado:           'observado',
 }
 
-// ─── Fields that have _source columns ─────────────────────────────────────────
-// Only these fields get their _source updated automatically.
-// Adding a new tracked field: add it here.
+// ─── Campo → real _source column name ─────────────────────────────────────────
+// Maps a profile field to the actual _source column that exists in the DB.
+// Source column names do NOT follow a generic ${campo}_source pattern —
+// they have their own names (e.g. tono_comunicacion → tono_source).
+// Only columns confirmed in migrations/006 and migrations/012 are listed here.
+// PGRST204 "column not found" will occur if you add an entry whose _source
+// column does not exist in agent_intelligence_profiles.
 
-const FIELDS_WITH_SOURCE = new Set([
-  'tono_comunicacion',
-  'nivel_formalidad',
-  'estilo_escritura',
-  'frases_propias',
-  'palabras_a_evitar',
-  'objeciones_frecuentes',
-  'ctas_efectivos',
-  'mercado_objetivo',
-  'ciudad_estado',
-  'cliente_ideal_json',
-  'propuesta_de_valor',
-  'historia_personal',
-  'canal_preferido',
-  'productos_principales',
-])
+const CAMPO_TO_SOURCE_COLUMN: Record<string, string> = {
+  tono_comunicacion:    'tono_source',
+  estilo_escritura:     'estilo_source',
+  frases_propias:       'frases_source',
+  objeciones_frecuentes:'objeciones_source',
+  ctas_efectivos:       'ctas_source',
+  mercado_objetivo:     'mercado_source',
+  cliente_ideal_json:   'cliente_ideal_source',
+  canal_preferido:      'canal_preferido_source',
+  // NOTE: historia_personal, productos_principales, propuesta_de_valor, etc.
+  // do NOT have _source columns in the DB — do not add them here.
+}
 
 // ─── Main service function ────────────────────────────────────────────────────
 
@@ -154,17 +154,23 @@ export async function updateAgentProfile(
     updated_at: new Date().toISOString(),
   }
 
-  // Auto-update _source columns for tracked fields
+  // Auto-update _source columns for tracked fields.
+  // Uses CAMPO_TO_SOURCE_COLUMN to map to the real column name — never uses
+  // the generic ${campo}_source pattern which generates non-existent columns.
   for (const campo of fieldNames) {
-    if (FIELDS_WITH_SOURCE.has(campo)) {
-      updatePayload[`${campo}_source`] = intelSource
+    const sourceCol = CAMPO_TO_SOURCE_COLUMN[campo]
+    if (sourceCol) {
+      updatePayload[sourceCol] = intelSource
     }
   }
 
   // 3. Write to database — only include known columns in payload
   const safePayload: Record<string, unknown> = { updated_at: updatePayload.updated_at }
   for (const [k, v] of Object.entries(updatePayload)) {
-    if (KNOWN_COLUMNS.has(k) || k.endsWith('_source')) safePayload[k] = v
+    // Only include columns confirmed in KNOWN_COLUMNS.
+    // _source columns are added by CAMPO_TO_SOURCE_COLUMN with their real names,
+    // which are already listed in KNOWN_COLUMNS — no generic endsWith check needed.
+    if (KNOWN_COLUMNS.has(k)) safePayload[k] = v
   }
 
   const { error } = await client
