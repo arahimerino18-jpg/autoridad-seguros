@@ -4,6 +4,73 @@ import { useState, useCallback, useRef } from 'react'
 import type { ChannelId, ContentOutput } from '@/lib/content-studio/channel-registry'
 import type { ModificationType } from '@/lib/content-studio/content-engine'
 
+// ─── Static post channel normalization ───────────────────────────────────────
+// The AI may return different field names depending on the prompt iteration:
+//   - {caption, hashtags:{categoria_1_tema, categoria_2_comunidad, categoria_3_valor}}
+//   - {hook, cuerpo, cta, hashtags:{producto, audiencia, marca}}
+// Both are valid server responses. This function normalizes any variant to the
+// StaticPostOutput shape that preview-components.tsx expects.
+// Applied ONLY to static post channels — other channel types are untouched.
+
+const STATIC_POST_CHANNELS = new Set([
+  'instagram_post', 'facebook_post', 'linkedin_post', 'nextdoor_post',
+])
+
+function toStringArray(v: unknown): string[] {
+  if (Array.isArray(v)) return (v as unknown[]).filter(s => typeof s === 'string') as string[]
+  return []
+}
+
+function normalizeStaticPost(raw: Record<string, unknown>): Record<string, unknown> {
+  // ── Text fields ────────────────────────────────────────────────────────────
+  // Prefer explicit hook/cuerpo/cta; fall back to splitting caption if absent.
+  const hook   = typeof raw.hook   === 'string' ? raw.hook   : ''
+  const cta    = typeof raw.cta    === 'string' ? raw.cta    : ''
+  const cuerpo = typeof raw.cuerpo === 'string'
+    ? raw.cuerpo
+    : typeof raw.caption === 'string' ? raw.caption : ''
+
+  const texto_imagen = typeof raw.texto_imagen === 'string' ? raw.texto_imagen : undefined
+  const alt_text     = typeof raw.alt_text     === 'string' ? raw.alt_text     : undefined
+
+  // ── Hashtags ───────────────────────────────────────────────────────────────
+  // Accept both naming schemes; preserve original category arrays.
+  // Also build a deduped flat list (not stored in the output object — used
+  // only by preview-components internally via spread of the three arrays).
+  let htProducto:  string[] = []
+  let htAudiencia: string[] = []
+  let htMarca:     string[] = []
+
+  const rawHt = raw.hashtags
+  if (rawHt && typeof rawHt === 'object' && !Array.isArray(rawHt)) {
+    const ht = rawHt as Record<string, unknown>
+
+    // Scheme A: {producto, audiencia, marca}
+    if (Array.isArray(ht.producto) || Array.isArray(ht.audiencia) || Array.isArray(ht.marca)) {
+      htProducto  = toStringArray(ht.producto)
+      htAudiencia = toStringArray(ht.audiencia)
+      htMarca     = toStringArray(ht.marca)
+    } else {
+      // Scheme B: {categoria_1_*, categoria_2_*, categoria_3_*} or any other keys
+      const buckets = Object.values(ht)
+        .filter(Array.isArray)
+        .map(toStringArray)
+      htProducto  = buckets[0] ?? []
+      htAudiencia = buckets[1] ?? []
+      htMarca     = buckets[2] ?? []
+    }
+  }
+
+  return {
+    hook,
+    cuerpo,
+    cta,
+    hashtags: { producto: htProducto, audiencia: htAudiencia, marca: htMarca },
+    ...(texto_imagen ? { texto_imagen } : {}),
+    ...(alt_text     ? { alt_text }     : {}),
+  }
+}
+
 // ─── JSON extraction + minimal output helpers ────────────────────────────────
 // Mirror of the server-side extractCleanJson — applied client-side when
 // the API sends raw text instead of parsed_output (json_failed = true).
@@ -223,6 +290,14 @@ export function useContentGeneration() {
       if (!parsedOutput && fullText) {
         const extracted = extractCleanJsonClient(fullText)
         parsedOutput = (extracted ?? buildMinimalOutput(fullText)) as unknown as ContentOutput
+      }
+
+      // Normalize static post channels to the shape StaticPostOutput expects.
+      // Other channel types (carousel, story, reel, whatsapp…) are untouched.
+      if (parsedOutput && STATIC_POST_CHANNELS.has(channelId)) {
+        parsedOutput = normalizeStaticPost(
+          parsedOutput as unknown as Record<string, unknown>
+        ) as unknown as ContentOutput
       }
 
       setState((prev) => ({
