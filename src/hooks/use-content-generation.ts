@@ -102,24 +102,33 @@ export function useContentGeneration() {
       }
 
       const reader = response.body!.getReader()
-      const decoder = new TextDecoder()
+      // UTF-8 aware decoder — stream:true holds incomplete multi-byte
+      // sequences (e.g. split emojis or accented chars) across reads.
+      const decoder = new TextDecoder('utf-8', { fatal: false })
 
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
+      // Buffer persists across reader.read() calls.
+      // Incomplete SSE lines (JSON split across TCP chunks) are held here
+      // until the next read delivers the rest — never discarded.
+      let buffer = ''
 
-        const chunk = decoder.decode(value, { stream: true })
-        for (const line of chunk.split('\n')) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6)
-          if (data === '[DONE]') break
+      // Inline helper — used both inside the loop and after it
+      const processLines = (lines: string[]) => {
+        for (const line of lines) {
+          // Support both \n and \r\n line endings
+          const trimmedLine = line.replace(/\r$/, '')
+          if (!trimmedLine.startsWith('data: ')) continue
+          const data = trimmedLine.slice(6).trim()
+          if (data === '[DONE]') return true  // signal to break outer
 
           try {
             const parsed = JSON.parse(data) as {
               text?: string
               done?: boolean
               parsed_output?: ContentOutput
+              raw?: string
+              json_failed?: boolean
               error?: string
+              fatal?: boolean
             }
 
             if (parsed.error) throw new Error(parsed.error)
@@ -129,23 +138,51 @@ export function useContentGeneration() {
               setState((prev) => ({ ...prev, rawStream: fullText }))
             }
 
-            if (parsed.done && parsed.parsed_output) {
-              parsedOutput = parsed.parsed_output
+            if (parsed.done) {
+              if (parsed.parsed_output) {
+                parsedOutput = parsed.parsed_output
+              } else if (parsed.raw) {
+                parsedOutput = { caption: parsed.raw } as unknown as ContentOutput
+              }
             }
           } catch (e) {
+            // SyntaxError here means genuinely malformed JSON on a complete line —
+            // fragments are held in `buffer` by lines.pop() and never reach here.
             if (e instanceof SyntaxError) continue
             throw e
           }
         }
+        return false  // did not encounter [DONE]
       }
 
-      // If JSON parse failed in the API (raw text), try client-side
-      if (!parsedOutput && fullText) {
-        try {
-          parsedOutput = JSON.parse(fullText) as ContentOutput
-        } catch {
-          // Keep null — will show error state for JSON-required channels
+      outer: while (true) {
+        const { done, value } = await reader.read()
+        if (done) {
+          // Flush any pending UTF-8 multi-byte sequences held by the decoder
+          buffer += decoder.decode()
+          // Process whatever remains in the buffer (last line may lack trailing \n)
+          if (buffer.trim()) {
+            processLines([buffer])
+          }
+          break
         }
+
+        // Append decoded bytes to buffer — never lose bytes between reads
+        buffer += decoder.decode(value, { stream: true })
+
+        // Split on \n — \r is stripped inside processLines.
+        // The last element may be an incomplete line — pop() holds it in buffer.
+        const lines = buffer.split('\n')
+        buffer = lines.pop() ?? ''
+
+        if (processLines(lines)) break outer
+      }
+
+      // Fallback: stream ended with text but no parsed_output event.
+      // This can happen if the server closes the connection unexpectedly.
+      // Use fullText so the UI, Copy and Save are never left empty.
+      if (!parsedOutput && fullText) {
+        parsedOutput = { caption: fullText } as unknown as ContentOutput
       }
 
       setState((prev) => ({
