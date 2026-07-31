@@ -5,6 +5,25 @@ import { runContentEngine } from '@/lib/content-studio/content-engine'
 import type { EngineParams } from '@/lib/content-studio/content-engine'
 import type { ChannelId } from '@/lib/content-studio/channel-registry'
 
+// ─── JSON extraction helper ──────────────────────────────────────────────────
+// Claude sometimes wraps its JSON output in ```json ... ``` fences or adds
+// preamble text. This function strips fences and extracts the first complete
+// JSON object, so JSON.parse succeeds without a correction round-trip.
+function extractCleanJson(text: string): string {
+  // 1. Strip ```json ... ``` or ``` ... ``` fences
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  if (fenced?.[1]) return fenced[1].trim()
+
+  // 2. Extract first {...} block (handles preamble/postamble text)
+  const start = text.indexOf('{')
+  const end   = text.lastIndexOf('}')
+  if (start !== -1 && end > start) return text.slice(start, end + 1)
+
+  // 3. No JSON found — return as-is so JSON.parse can produce its own error
+  return text.trim()
+}
+
+
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
 function getMaxTokensForChannel(channelId: string): number {
@@ -154,14 +173,18 @@ export async function POST(request: NextRequest) {
           // Log usage after successful generation
           await logUsage(user.id, 'content_studio', supabase)
 
-          // Try to parse JSON — with one silent retry if it fails
+          // Strip markdown fences and extract JSON before parsing.
+          // Claude sometimes wraps output in ```json ... ``` or adds
+          // preamble text — extractCleanJson handles all these cases so
+          // JSON.parse succeeds without a correction round-trip.
           let parsedOutput: Record<string, unknown> | null = null
           let jsonFailed = false
 
           try {
-            parsedOutput = JSON.parse(fullOutput) as Record<string, unknown>
+            parsedOutput = JSON.parse(extractCleanJson(fullOutput)) as Record<string, unknown>
           } catch {
-            // First parse failed — attempt a silent correction call
+            // extractCleanJson did not find valid JSON — attempt a silent
+            // correction call to Claude as a last resort.
             try {
               const correctionResponse = await anthropic.messages.create({
                 model: 'claude-sonnet-4-6',
@@ -175,7 +198,7 @@ export async function POST(request: NextRequest) {
               const correctedText = correctionResponse.content[0]?.type === 'text'
                 ? correctionResponse.content[0].text.trim()
                 : ''
-              parsedOutput = JSON.parse(correctedText) as Record<string, unknown>
+              parsedOutput = JSON.parse(extractCleanJson(correctedText)) as Record<string, unknown>
             } catch {
               // Both attempts failed — send raw text with degraded flag
               jsonFailed = true

@@ -4,6 +4,39 @@ import { useState, useCallback, useRef } from 'react'
 import type { ChannelId, ContentOutput } from '@/lib/content-studio/channel-registry'
 import type { ModificationType } from '@/lib/content-studio/content-engine'
 
+// ─── JSON extraction + minimal output helpers ────────────────────────────────
+// Mirror of the server-side extractCleanJson — applied client-side when
+// the API sends raw text instead of parsed_output (json_failed = true).
+
+function extractCleanJsonClient(text: string): Record<string, unknown> | null {
+  // Strip ```json ... ``` fences
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  const candidate = fenced?.[1]?.trim() ?? (() => {
+    const s = text.indexOf('{'), e = text.lastIndexOf('}')
+    return s !== -1 && e > s ? text.slice(s, e + 1) : text.trim()
+  })()
+
+  try {
+    const parsed = JSON.parse(candidate)
+    // Accept only if it looks like a content output (has at least one text field)
+    if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>
+  } catch { /* not valid JSON */ }
+  return null
+}
+
+// Builds the minimum StaticPostOutput-compatible object from raw text.
+// Used only when ALL JSON parsing attempts fail. Ensures the view,
+// "Copiar todo", and "Guardar contenido" always have something to show.
+function buildMinimalOutput(raw: string): Record<string, unknown> {
+  return {
+    hook: '',
+    cuerpo: raw,
+    cta: '',
+    hashtags: { producto: [], audiencia: [], marca: [] },
+  }
+}
+
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export type GenerationStatus = 'idle' | 'generating' | 'modifying' | 'complete' | 'error'
@@ -140,9 +173,15 @@ export function useContentGeneration() {
 
             if (parsed.done) {
               if (parsed.parsed_output) {
+                // Ideal path: server extracted valid JSON
                 parsedOutput = parsed.parsed_output
               } else if (parsed.raw) {
-                parsedOutput = { caption: parsed.raw } as unknown as ContentOutput
+                // Degraded path: server sent raw text (json_failed=true).
+                // Try client-side extraction first (handles fences/preamble),
+                // then fall back to a minimal StaticPostOutput-compatible object
+                // so the view, "Copiar todo" and "Guardar" are never empty.
+                const extracted = extractCleanJsonClient(parsed.raw)
+                parsedOutput = (extracted ?? buildMinimalOutput(parsed.raw)) as unknown as ContentOutput
               }
             }
           } catch (e) {
@@ -180,9 +219,10 @@ export function useContentGeneration() {
 
       // Fallback: stream ended with text but no parsed_output event.
       // This can happen if the server closes the connection unexpectedly.
-      // Use fullText so the UI, Copy and Save are never left empty.
+      // Use the same extraction path as the degraded route above.
       if (!parsedOutput && fullText) {
-        parsedOutput = { caption: fullText } as unknown as ContentOutput
+        const extracted = extractCleanJsonClient(fullText)
+        parsedOutput = (extracted ?? buildMinimalOutput(fullText)) as unknown as ContentOutput
       }
 
       setState((prev) => ({
