@@ -158,7 +158,7 @@ function IntentForm({
       {/* Canal indicator */}
       <div className="flex items-center gap-2 bg-[#EEF1F8] rounded-xl px-3 py-2">
         <span className="text-lg">{channel.emoji}</span>
-        <span className="text-sm font-medium text-brand-navy-700">{channel.label}</span>
+        <span className="text-sm font-medium text-[#0F1A3E]">{channel.label}</span>
       </div>
 
       {/* Tema */}
@@ -457,7 +457,7 @@ export function ContentStudio({ agentHandle, usageCount, usageMax }: ContentStud
                 ))}
                 <button
                   onClick={() => setShowCustomInput(!showCustomInput)}
-                  className="text-xs px-3 py-1.5 rounded-full border border-brand-gold-200 bg-brand-gold-50 text-brand-gold-700 hover:bg-brand-gold-100 transition-all"
+                  className="text-xs px-3 py-1.5 rounded-full border border-[#F0D98A] bg-[#FDF8E8] text-[#8A6010] hover:bg-[#FAF0C8] transition-all"
                 >
                   ✏️ Instrucción propia
                 </button>

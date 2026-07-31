@@ -12,7 +12,7 @@ const buttonVariants = cva(
     'inline-flex items-center justify-center gap-2',
     'font-medium rounded-lg',
     'transition-all duration-150',
-    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-navy focus-visible:ring-offset-2',
+    'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#1B2E6B] focus-visible:ring-offset-2',
     'disabled:pointer-events-none disabled:opacity-50',
     'select-none',
   ],
@@ -20,25 +20,25 @@ const buttonVariants = cva(
     variants: {
       variant: {
         primary: [
-          'bg-brand-navy-500 text-white',
-          'hover:bg-brand-navy-600 active:bg-brand-navy-700',
+          'bg-[#1B2E6B] text-white',
+          'hover:bg-[#16255A] active:bg-[#111C42]',
           'shadow-brand hover:shadow-brand-lg',
         ],
         secondary: [
-          'bg-white text-brand-navy-500',
-          'border border-brand-navy-200',
-          'hover:bg-brand-navy-50 hover:border-brand-navy-300',
-          'active:bg-brand-navy-100',
+          'bg-white text-[#1B2E6B]',
+          'border border-[#94A7D4]',
+          'hover:bg-[#EEF1F8] hover:border-[#6B88C4]',
+          'active:bg-[#D5DCF0]',
         ],
         gold: [
-          'bg-brand-gold-400 text-white',
-          'hover:bg-brand-gold-500 active:bg-brand-gold-600',
+          'bg-[#D4A017] text-white',
+          'hover:bg-[#B8880F] active:bg-[#9C720D]',
           'shadow-gold',
         ],
         ghost: [
-          'bg-transparent text-brand-navy-500',
-          'hover:bg-brand-navy-50',
-          'active:bg-brand-navy-100',
+          'bg-transparent text-[#1B2E6B]',
+          'hover:bg-[#EEF1F8]',
+          'active:bg-[#D5DCF0]',
         ],
         danger: [
           'bg-danger text-white',
@@ -49,7 +49,7 @@ const buttonVariants = cva(
           'hover:bg-red-50',
         ],
         link: [
-          'bg-transparent text-brand-navy-500 underline-offset-4',
+          'bg-transparent text-[#1B2E6B] underline-offset-4',
           'hover:underline',
           'p-0 h-auto',
         ],
