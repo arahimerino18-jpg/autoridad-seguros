@@ -92,13 +92,45 @@ export function StaticPostPreview({
   channelLabel: string
   agentHandle?: string
 }) {
-  const allHashtags = [
-    ...(output.hashtags?.producto ?? []),
-    ...(output.hashtags?.audiencia ?? []),
-    ...(output.hashtags?.marca ?? []),
-  ].join(' ')
+  // ── Normalize text fields ────────────────────────────────────────────────────
+  // Accepts both API schemas without crashing:
+  //   Internal: { hook, cuerpo, cta, hashtags.{producto,audiencia,marca} }
+  //   API real: { caption, texto_imagen, hashtags.{categoria_1_*,...} }
+  const outputAny = output as unknown as Record<string, unknown>
+  const displayHook = typeof output.hook   === 'string' ? output.hook   : ''
+  const displayBody = typeof output.cuerpo === 'string' ? output.cuerpo
+    : typeof outputAny.caption === 'string' ? outputAny.caption as string : ''
+  const displayCta  = typeof output.cta    === 'string' ? output.cta    : ''
 
-  const fullCaption = [output.hook, output.cuerpo, output.cta, allHashtags]
+  // ── Normalize hashtag arrays ─────────────────────────────────────────────────
+  // Accepts { producto, audiencia, marca } (internal) or
+  // { categoria_1_tema, categoria_2_comunidad, categoria_3_valor } (API real).
+  // Never calls .join()/.slice() on a non-array value.
+  const toStrArr = (v: unknown): string[] =>
+    Array.isArray(v)
+      ? (v as unknown[]).filter((s): s is string => typeof s === 'string')
+      : []
+
+  const rawHt = output.hashtags as Record<string, unknown> | null | undefined
+  const ht: Record<string, unknown> =
+    rawHt && typeof rawHt === 'object' && !Array.isArray(rawHt) ? rawHt : {}
+
+  const allBuckets = Object.values(ht).filter(Array.isArray).map(toStrArr)
+  const htProducto  = toStrArr(ht.producto).length  ? toStrArr(ht.producto)  : (allBuckets[0] ?? [])
+  const htAudiencia = toStrArr(ht.audiencia).length ? toStrArr(ht.audiencia) : (allBuckets[1] ?? [])
+  const htMarca     = toStrArr(ht.marca).length     ? toStrArr(ht.marca)     : (allBuckets[2] ?? [])
+
+  // Deduplicated flat list for "Copiar todo" and the copy-hashtags button
+  const seen = new Set<string>()
+  const flatHt = [...htProducto, ...htAudiencia, ...htMarca].filter(h => {
+    if (seen.has(h)) return false
+    seen.add(h)
+    return true
+  })
+  const allHashtags = flatHt.join(' ')
+
+  // fullCaption uses only normalized local values — never undefined
+  const fullCaption = [displayHook, displayBody, displayCta, allHashtags]
     .filter(Boolean)
     .join('\n\n')
 
@@ -110,9 +142,12 @@ export function StaticPostPreview({
         <CopyButton text={fullCaption} label="Copiar todo" />
       </div>
 
-      {/* Image text */}
+      {/* Image text.
+          bg-[#1B2E6B] is required here: bg-brand-navy-500 does not exist in
+          the Tailwind v4 compiled CSS, so the container would be transparent
+          and the white text invisible. */}
       {output.texto_imagen && (
-        <div className="bg-brand-navy-500 rounded-xl p-4 text-center">
+        <div className="bg-[#1B2E6B] rounded-xl p-4 text-center">
           <p className="text-white font-bold text-lg">{output.texto_imagen}</p>
           {agentHandle && (
             <p className="text-white/60 text-xs mt-1">{agentHandle}</p>
@@ -120,27 +155,31 @@ export function StaticPostPreview({
         </div>
       )}
 
-      <FieldBlock label="Hook (primera línea)" value={output.hook} variant="hook" />
-      <FieldBlock label="Cuerpo" value={output.cuerpo} />
-      <FieldBlock label="CTA" value={output.cta} variant="cta" />
+      <FieldBlock label="Hook (primera línea)" value={displayHook} variant="hook" />
+      <FieldBlock label="Cuerpo" value={displayBody} />
+      <FieldBlock label="CTA" value={displayCta} variant="cta" />
 
       {/* Hashtags by category */}
-      {output.hashtags && (
+      {flatHt.length > 0 && (
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <span className="text-2xs font-semibold text-gray-400 uppercase tracking-wide">
-              Hashtags ({[...output.hashtags.producto, ...output.hashtags.audiencia, ...output.hashtags.marca].length})
+              Hashtags ({flatHt.length})
             </span>
             <CopyButton text={allHashtags} />
           </div>
           <div className="grid grid-cols-3 gap-2">
-            {(['producto', 'audiencia', 'marca'] as const).map((cat) => (
-              <div key={cat} className="bg-gray-50 rounded-lg p-2">
-                <p className="text-2xs text-gray-400 mb-1 capitalize">{cat}</p>
+            {([
+              { key: 'producto',  items: htProducto  },
+              { key: 'audiencia', items: htAudiencia },
+              { key: 'marca',     items: htMarca     },
+            ] as const).map(({ key, items }) => (
+              <div key={key} className="bg-gray-50 rounded-lg p-2">
+                <p className="text-2xs text-gray-400 mb-1 capitalize">{key}</p>
                 <p className="text-xs text-gray-600 leading-relaxed">
-                  {output.hashtags[cat].slice(0, 5).join(' ')}
-                  {output.hashtags[cat].length > 5 && (
-                    <span className="text-gray-400"> +{output.hashtags[cat].length - 5}</span>
+                  {items.slice(0, 5).join(' ')}
+                  {items.length > 5 && (
+                    <span className="text-gray-400"> +{items.length - 5}</span>
                   )}
                 </p>
               </div>
@@ -151,6 +190,7 @@ export function StaticPostPreview({
     </div>
   )
 }
+
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // CAROUSEL PREVIEW
