@@ -26,9 +26,12 @@ function normalizeStaticPost(raw: Record<string, unknown>): Record<string, unkno
   // Prefer explicit hook/cuerpo/cta; fall back to splitting caption if absent.
   const hook   = typeof raw.hook   === 'string' ? raw.hook   : ''
   const cta    = typeof raw.cta    === 'string' ? raw.cta    : ''
-  const cuerpo = typeof raw.cuerpo === 'string'
-    ? raw.cuerpo
-    : typeof raw.caption === 'string' ? raw.caption : ''
+  // Prefer a non-empty cuerpo; if blank, fall back to caption.
+  // Claude sometimes returns {cuerpo:'', caption:'real text'} when the prompt
+  // schema includes both fields — empty string must not win over a real value.
+  const rawCuerpo  = typeof raw.cuerpo  === 'string' ? raw.cuerpo  : ''
+  const rawCaption = typeof raw.caption === 'string' ? raw.caption : ''
+  const cuerpo = rawCuerpo.trim() || rawCaption.trim() || ''
 
   const texto_imagen = typeof raw.texto_imagen === 'string' ? raw.texto_imagen : undefined
   const alt_text     = typeof raw.alt_text     === 'string' ? raw.alt_text     : undefined
@@ -339,12 +342,6 @@ export function useContentGeneration() {
         ) as unknown as ContentOutput
       }
 
-      // DIAG — remove after confirming fix
-      console.log('[CS:hook] setState complete | parsedOutput type:', typeof parsedOutput,
-        '| keys:', parsedOutput ? Object.keys(parsedOutput as unknown as object) : 'null',
-        '| cuerpo:', (parsedOutput as unknown as Record<string,unknown>)?.cuerpo?.toString().slice(0,40),
-        '| caption:', (parsedOutput as unknown as Record<string,unknown>)?.caption?.toString().slice(0,40),
-      )
       setState((prev) => ({
         ...prev,
         status: 'complete',
