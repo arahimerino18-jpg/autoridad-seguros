@@ -291,7 +291,6 @@ export function ContentStudio({ agentHandle, usageCount, usageMax }: ContentStud
     reset,
     isGenerating,
     isModifying,
-    isComplete,
   } = useContentGeneration()
 
   const handleGenerate = useCallback(
@@ -398,7 +397,7 @@ export function ContentStudio({ agentHandle, usageCount, usageMax }: ContentStud
           </div>
         )}
 
-        {/* Streaming state */}
+        {/* Streaming state — only shown when no output exists yet */}
         {(isGenerating || isModifying) && !state.parsedOutput && (
           <div className="flex flex-col items-center justify-center py-16 gap-4">
             <div className="w-12 h-12 rounded-2xl bg-[#EEF1F8] flex items-center justify-center">
@@ -419,8 +418,11 @@ export function ContentStudio({ agentHandle, usageCount, usageMax }: ContentStud
           </div>
         )}
 
-        {/* Complete state */}
-        {isComplete && state.parsedOutput && (
+        {/* Output state — shown whenever parsedOutput exists, regardless of
+            isComplete. This prevents the panel going blank during:
+            1. Modifications (isComplete=false while modifying)
+            2. Race between status='complete' and parsedOutput being set */}
+        {state.parsedOutput && (
           <div className="space-y-4 animate-fade-in">
             {/* Preview */}
             <div className="bg-white rounded-2xl border border-gray-100 shadow-card p-5">
