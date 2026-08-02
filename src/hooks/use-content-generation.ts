@@ -202,94 +202,96 @@ export function useContentGeneration() {
       }
 
       const reader = response.body!.getReader()
-      // UTF-8 aware decoder — stream:true holds incomplete multi-byte
-      // sequences (e.g. split emojis or accented chars) across reads.
+      // UTF-8-aware — stream:true retains incomplete multi-byte sequences
+      // (split emojis, accented chars) between reads.
       const decoder = new TextDecoder('utf-8', { fatal: false })
 
-      // Buffer persists across reader.read() calls.
-      // Incomplete SSE lines (JSON split across TCP chunks) are held here
-      // until the next read delivers the rest — never discarded.
+      // Buffer persists across reader.read() calls so that JSON events
+      // split across TCP chunks are reassembled before parsing.
       let buffer = ''
-
-      // Inline helper — used both inside the loop and after it
-      const processLines = (lines: string[]) => {
-        for (const line of lines) {
-          // Support both \n and \r\n line endings
-          const trimmedLine = line.replace(/\r$/, '')
-          if (!trimmedLine.startsWith('data: ')) continue
-          const data = trimmedLine.slice(6).trim()
-          if (data === '[DONE]') return true  // signal to break outer
-
-          try {
-            const parsed = JSON.parse(data) as {
-              text?: string
-              done?: boolean
-              parsed_output?: ContentOutput
-              raw?: string
-              json_failed?: boolean
-              error?: string
-              fatal?: boolean
-            }
-
-            if (parsed.error) throw new Error(parsed.error)
-
-            if (parsed.text) {
-              fullText += parsed.text
-              setState((prev) => ({ ...prev, rawStream: fullText }))
-            }
-
-            if (parsed.done) {
-              if (parsed.parsed_output) {
-                // Ideal path: server extracted valid JSON
-                parsedOutput = parsed.parsed_output
-              } else if (parsed.raw) {
-                // Degraded path: server sent raw text (json_failed=true).
-                // Try client-side extraction first (handles fences/preamble),
-                // then fall back to a minimal StaticPostOutput-compatible object
-                // so the view, "Copiar todo" and "Guardar" are never empty.
-                const extracted = extractCleanJsonClient(parsed.raw)
-                parsedOutput = (extracted ?? buildMinimalOutput(parsed.raw)) as unknown as ContentOutput
-              }
-            }
-          } catch (e) {
-            // SyntaxError here means genuinely malformed JSON on a complete line —
-            // fragments are held in `buffer` by lines.pop() and never reach here.
-            if (e instanceof SyntaxError) continue
-            throw e
-          }
-        }
-        return false  // did not encounter [DONE]
-      }
 
       outer: while (true) {
         const { done, value } = await reader.read()
+
         if (done) {
-          // Flush any pending UTF-8 multi-byte sequences held by the decoder
+          // Flush any UTF-8 bytes the decoder is still holding
           buffer += decoder.decode()
-          // Process whatever remains in the buffer (last line may lack trailing \n)
-          if (buffer.trim()) {
-            processLines([buffer])
-          }
           break
         }
 
-        // Append decoded bytes to buffer — never lose bytes between reads
         buffer += decoder.decode(value, { stream: true })
 
-        // Split on \n — \r is stripped inside processLines.
-        // The last element may be an incomplete line — pop() holds it in buffer.
+        // Split on newlines. The last element may be an incomplete SSE line —
+        // pop() puts it back into buffer so it is completed by the next read.
         const lines = buffer.split('\n')
         buffer = lines.pop() ?? ''
 
-        if (processLines(lines)) break outer
+        for (const raw of lines) {
+          const line = raw.replace(/\r$/, '') // handle \r\n endings
+          if (!line.startsWith('data: ')) continue
+
+          const data = line.slice(6).trim()
+          if (data === '[DONE]') break outer
+
+          try {
+            const evt = JSON.parse(data) as {
+              text?:          string
+              done?:          boolean
+              parsed_output?: ContentOutput
+              raw?:           string
+              json_failed?:   boolean
+              error?:         string
+              progress?:      boolean
+            }
+
+            if (evt.error) throw new Error(evt.error)
+
+            // Accumulate streaming text (shown live during generation)
+            if (evt.text) {
+              fullText += evt.text
+              setState((prev) => ({ ...prev, rawStream: fullText }))
+            }
+
+            // Server signals completion with the parsed JSON
+            if (evt.done) {
+              if (evt.parsed_output) {
+                parsedOutput = evt.parsed_output
+              } else if (evt.raw) {
+                // Server failed to parse — attempt client-side extraction
+                parsedOutput = (extractCleanJsonClient(evt.raw) ?? buildMinimalOutput(evt.raw)) as unknown as ContentOutput
+              }
+              // parsed_output and raw both absent: fall through to fullText fallback below
+            }
+          } catch (e) {
+            if (e instanceof SyntaxError) continue // incomplete fragment — skip, not a crash
+            throw e
+          }
+        }
       }
 
-      // Fallback: stream ended with text but no parsed_output event.
-      // This can happen if the server closes the connection unexpectedly.
-      // Use the same extraction path as the degraded route above.
+      // Process any bytes remaining in the buffer after the loop ends
+      if (buffer.trim()) {
+        const line = buffer.replace(/\r$/, '')
+        if (line.startsWith('data: ')) {
+          const data = line.slice(6).trim()
+          if (data !== '[DONE]') {
+            try {
+              const evt = JSON.parse(data) as { done?: boolean; parsed_output?: ContentOutput; raw?: string; text?: string }
+              if (evt.text) fullText += evt.text
+              if (evt.done && evt.parsed_output) parsedOutput = evt.parsed_output
+              else if (evt.done && evt.raw) {
+                parsedOutput = (extractCleanJsonClient(evt.raw) ?? buildMinimalOutput(evt.raw)) as unknown as ContentOutput
+              }
+            } catch { /* incomplete final line — ignore */ }
+          }
+        }
+      }
+
+      // Fallback: stream closed without a done event (unexpected disconnect).
+      // fullText contains all the text chunks Claude emitted.
+      // Try to parse it as JSON before wrapping as minimal output.
       if (!parsedOutput && fullText) {
-        const extracted = extractCleanJsonClient(fullText)
-        parsedOutput = (extracted ?? buildMinimalOutput(fullText)) as unknown as ContentOutput
+        parsedOutput = (extractCleanJsonClient(fullText) ?? buildMinimalOutput(fullText)) as unknown as ContentOutput
       }
 
       // Normalize static post channels to the shape StaticPostOutput expects.
