@@ -424,6 +424,13 @@ export function ContentStudio({ agentHandle, usageCount, usageMax }: ContentStud
             2. Race between status='complete' and parsedOutput being set */}
         {state.parsedOutput && (
           <div className="space-y-4 animate-fade-in">
+            {/* DIAG — remove after fix */}
+            {console.log('[CS:render] parsedOutput keys:', Object.keys(state.parsedOutput as unknown as object),
+              '| cuerpo:', (state.parsedOutput as unknown as Record<string,unknown>).cuerpo?.toString().slice(0,40),
+              '| caption:', (state.parsedOutput as unknown as Record<string,unknown>).caption?.toString().slice(0,40),
+              '| channelId:', selectedChannel,
+              '| state.channelId:', state.channelId,
+            ) as unknown as null}
             {/* Preview */}
             <div className="bg-white rounded-2xl border border-gray-100 shadow-card p-5">
               <ContentPreview

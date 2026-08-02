@@ -96,6 +96,12 @@ export function StaticPostPreview({
   // Accepts both API schemas without crashing:
   //   Internal: { hook, cuerpo, cta, hashtags.{producto,audiencia,marca} }
   //   API real: { caption, texto_imagen, hashtags.{categoria_1_*,...} }
+  // DIAG — remove after fix
+  console.log('[CS:preview] StaticPostPreview received | keys:', Object.keys(output as unknown as object),
+    '| hook:', output.hook, '| cuerpo:', (output as unknown as Record<string,unknown>).cuerpo?.toString().slice(0,40),
+    '| caption:', (output as unknown as Record<string,unknown>).caption?.toString().slice(0,40),
+    '| hashtags keys:', Object.keys((output.hashtags ?? {}) as object),
+  )
   const outputAny = output as unknown as Record<string, unknown>
   const displayHook = typeof output.hook   === 'string' ? output.hook   : ''
   const displayBody = typeof output.cuerpo === 'string' ? output.cuerpo

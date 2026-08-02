@@ -339,6 +339,12 @@ export function useContentGeneration() {
         ) as unknown as ContentOutput
       }
 
+      // DIAG — remove after confirming fix
+      console.log('[CS:hook] setState complete | parsedOutput type:', typeof parsedOutput,
+        '| keys:', parsedOutput ? Object.keys(parsedOutput as unknown as object) : 'null',
+        '| cuerpo:', (parsedOutput as unknown as Record<string,unknown>)?.cuerpo?.toString().slice(0,40),
+        '| caption:', (parsedOutput as unknown as Record<string,unknown>)?.caption?.toString().slice(0,40),
+      )
       setState((prev) => ({
         ...prev,
         status: 'complete',
