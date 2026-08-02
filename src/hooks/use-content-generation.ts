@@ -76,18 +76,55 @@ function normalizeStaticPost(raw: Record<string, unknown>): Record<string, unkno
 // the API sends raw text instead of parsed_output (json_failed = true).
 
 function extractCleanJsonClient(text: string): Record<string, unknown> | null {
-  // Strip ```json ... ``` fences
+  // Step 1: strip ```json ... ``` or ``` ... ``` fences first
   const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-  const candidate = fenced?.[1]?.trim() ?? (() => {
-    const s = text.indexOf('{'), e = text.lastIndexOf('}')
-    return s !== -1 && e > s ? text.slice(s, e + 1) : text.trim()
-  })()
+  const source = fenced?.[1]?.trim() ?? text
+
+  // Step 2: find the longest valid JSON object using a stack-based extractor.
+  // We try every { as a potential start and keep the longest parseable result.
+  // This handles: preamble text with stray braces, fenced blocks, postamble text.
+  let candidate: string | null = null
+
+  for (let startIdx = 0; startIdx < source.length; startIdx++) {
+    if (source[startIdx] !== '{') continue
+
+    let depth = 0
+    let inString = false
+    let escape = false
+
+    for (let i = startIdx; i < source.length; i++) {
+      const ch = source[i]
+      if (escape)       { escape = false; continue }
+      if (ch === '\\') { escape = true;  continue }
+      if (ch === '"')   { inString = !inString; continue }
+      if (inString)     continue
+
+      if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          const slice = source.slice(startIdx, i + 1)
+          // Keep the longest valid JSON object found
+          if (slice.length > (candidate?.length ?? 0)) {
+            try {
+              JSON.parse(slice) // validate
+              candidate = slice
+            } catch { /* not valid at this start — try next */ }
+          }
+          break
+        }
+      }
+    }
+  }
+
+  if (!candidate) return null
 
   try {
     const parsed = JSON.parse(candidate)
-    // Accept only if it looks like a content output (has at least one text field)
-    if (parsed && typeof parsed === 'object') return parsed as Record<string, unknown>
-  } catch { /* not valid JSON */ }
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      return parsed as Record<string, unknown>
+    }
+  } catch { /* malformed JSON — return null */ }
   return null
 }
 
