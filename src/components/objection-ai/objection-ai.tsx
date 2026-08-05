@@ -148,6 +148,53 @@ function FeedbackRow({ responseId }: { responseId: string }) {
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
+
+// Extracts the largest valid JSON object from text that may contain
+// markdown fences or preamble. Uses stack-based brace matching.
+function extractJsonFromText(text: string): Record<string, unknown> | null {
+  // Strip ```json ... ``` fences
+  let source = text
+  const fenceStart = source.indexOf('```')
+  if (fenceStart !== -1) {
+    const fenceEnd = source.lastIndexOf('```')
+    if (fenceEnd > fenceStart) {
+      source = source.slice(fenceStart + 3, fenceEnd)
+      if (source.startsWith('json')) source = source.slice(4)
+      source = source.trim()
+    }
+  }
+
+  let candidate: string | null = null
+  for (let si = 0; si < source.length; si++) {
+    if (source[si] !== '{') continue
+    let depth = 0, inStr = false, esc = false
+    for (let i = si; i < source.length; i++) {
+      const ch = source[i]
+      if (esc) { esc = false; continue }
+      if (ch === '\\') { esc = true; continue }
+      if (ch === '"') { inStr = !inStr; continue }
+      if (inStr) continue
+      if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          const s = source.slice(si, i + 1)
+          if (s.length > (candidate?.length ?? 0)) {
+            try { JSON.parse(s); candidate = s } catch { /* invalid */ }
+          }
+          break
+        }
+      }
+    }
+  }
+  if (!candidate) return null
+  try {
+    return JSON.parse(candidate) as Record<string, unknown>
+  } catch {
+    return null
+  }
+}
+
 export function ObjectionAI({ agentName }: ObjectionAIProps) {
   const [objecion, setObjecion] = useState('')
   const [producto, setProducto] = useState('general')
@@ -173,24 +220,42 @@ export function ObjectionAI({ agentName }: ObjectionAIProps) {
     setError(null)
     setCopiedAngulo(null)
 
+    let accumulated = ''
+
     try {
       await parseStream(
         '/api/ai/objection',
         { objecion, producto, canal, contexto },
         {
           signal: abortRef.current.signal,
-          onChunk: (chunk) => { setStreamText(prev => prev + chunk) },
-          onDone: (evt) => {
-            const analisis = evt.analisis as ObjecionAnalisis | undefined
-            const responseId = evt.response_id as string | undefined
-            if (analisis) {
-              setAnalisis(analisis)
-              setResponseId(responseId ?? null)
-            } else {
-              setError('No se pudo procesar el análisis. Intenta de nuevo.')
-            }
+          onChunk: (chunk: string) => {
+            accumulated += chunk
+            setStreamText(prev => prev + chunk)
           },
-          onError: (msg) => { setError(msg) },
+          onDone: (evt) => {
+            const responseId = evt.response_id as string | undefined
+            const serverAnalisis = evt.analisis as ObjecionAnalisis | null | undefined
+
+            // Primary: server parsed JSON and included it in the done event
+            if (serverAnalisis) {
+              setAnalisis(serverAnalisis)
+              setResponseId(responseId ?? null)
+              return
+            }
+
+            // Fallback: server json_failed — extract JSON from accumulated text
+            if (accumulated) {
+              const candidate = extractJsonFromText(accumulated)
+              if (candidate) {
+                setAnalisis(candidate as unknown as ObjecionAnalisis)
+                setResponseId(responseId ?? null)
+                return
+              }
+            }
+
+            setError('No se pudo procesar el análisis. Intenta de nuevo.')
+          },
+          onError: (msg: string) => { setError(msg) },
         }
       )
     } catch (err) {
