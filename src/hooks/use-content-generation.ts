@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef } from 'react'
 import type { ChannelId, ContentOutput } from '@/lib/content-studio/channel-registry'
+import { parseStream, type SSEEvent } from '@/lib/sse/parse-stream'
 import type { ModificationType } from '@/lib/content-studio/content-engine'
 
 // ─── Static post channel normalization ───────────────────────────────────────
@@ -229,110 +230,30 @@ export function useContentGeneration() {
     let parsedOutput: ContentOutput | null = null
 
     try {
-      const response = await fetch('/api/ai/content-studio', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ action, params: { ...params, channelId } }),
-        signal: controller.signal,
-      })
-
-      if (!response.ok) {
-        const err = await response.json() as { error?: string }
-        throw new Error(err?.error ?? `Error ${response.status}`)
-      }
-
-      const reader = response.body!.getReader()
-      // UTF-8-aware — stream:true retains incomplete multi-byte sequences
-      // (split emojis, accented chars) between reads.
-      const decoder = new TextDecoder('utf-8', { fatal: false })
-
-      // Buffer persists across reader.read() calls so that JSON events
-      // split across TCP chunks are reassembled before parsing.
-      let buffer = ''
-
-      outer: while (true) {
-        const { done, value } = await reader.read()
-
-        if (done) {
-          // Flush any UTF-8 bytes the decoder is still holding
-          buffer += decoder.decode()
-          break
-        }
-
-        buffer += decoder.decode(value, { stream: true })
-
-        // Split on newlines. The last element may be an incomplete SSE line —
-        // pop() puts it back into buffer so it is completed by the next read.
-        const lines = buffer.split('\n')
-        buffer = lines.pop() ?? ''
-
-        for (const raw of lines) {
-          const line = raw.replace(/\r$/, '') // handle \r\n endings
-          if (!line.startsWith('data: ')) continue
-
-          const data = line.slice(6).trim()
-          if (data === '[DONE]') break outer
-
-          try {
-            const evt = JSON.parse(data) as {
-              text?:          string
-              done?:          boolean
-              parsed_output?: ContentOutput
-              raw?:           string
-              json_failed?:   boolean
-              error?:         string
-              progress?:      boolean
+      // Shared SSE parser — buffer, UTF-8, \r\n, flush all handled centrally
+      await parseStream(
+        '/api/ai/content-studio',
+        { action, params: { ...params, channelId } },
+        {
+          signal: controller.signal,
+          onChunk: (chunk) => {
+            fullText += chunk
+            setState((prev) => ({ ...prev, rawStream: fullText }))
+          },
+          onDone: (evt: SSEEvent) => {
+            const po = evt.parsed_output as ContentOutput | undefined
+            const raw = evt.raw as string | undefined
+            if (po) {
+              parsedOutput = po
+            } else if (raw) {
+              parsedOutput = (extractCleanJsonClient(raw) ?? buildMinimalOutput(raw)) as unknown as ContentOutput
+            } else if (fullText) {
+              parsedOutput = (extractCleanJsonClient(fullText) ?? buildMinimalOutput(fullText)) as unknown as ContentOutput
             }
-
-            if (evt.error) throw new Error(evt.error)
-
-            // Accumulate streaming text (shown live during generation)
-            if (evt.text) {
-              fullText += evt.text
-              setState((prev) => ({ ...prev, rawStream: fullText }))
-            }
-
-            // Server signals completion with the parsed JSON
-            if (evt.done) {
-              if (evt.parsed_output) {
-                parsedOutput = evt.parsed_output
-              } else if (evt.raw) {
-                // Server failed to parse — attempt client-side extraction
-                parsedOutput = (extractCleanJsonClient(evt.raw) ?? buildMinimalOutput(evt.raw)) as unknown as ContentOutput
-              }
-              // parsed_output and raw both absent: fall through to fullText fallback below
-            }
-          } catch (e) {
-            if (e instanceof SyntaxError) continue // incomplete fragment — skip, not a crash
-            throw e
-          }
+          },
+          onError: (msg) => { throw new Error(msg) },
         }
-      }
-
-      // Process any bytes remaining in the buffer after the loop ends
-      if (buffer.trim()) {
-        const line = buffer.replace(/\r$/, '')
-        if (line.startsWith('data: ')) {
-          const data = line.slice(6).trim()
-          if (data !== '[DONE]') {
-            try {
-              const evt = JSON.parse(data) as { done?: boolean; parsed_output?: ContentOutput; raw?: string; text?: string }
-              if (evt.text) fullText += evt.text
-              if (evt.done && evt.parsed_output) parsedOutput = evt.parsed_output
-              else if (evt.done && evt.raw) {
-                parsedOutput = (extractCleanJsonClient(evt.raw) ?? buildMinimalOutput(evt.raw)) as unknown as ContentOutput
-              }
-            } catch { /* incomplete final line — ignore */ }
-          }
-        }
-      }
-
-      // Fallback: stream closed without a done event (unexpected disconnect).
-      // fullText contains all the text chunks Claude emitted.
-      // Try to parse it as JSON before wrapping as minimal output.
-      if (!parsedOutput && fullText) {
-        parsedOutput = (extractCleanJsonClient(fullText) ?? buildMinimalOutput(fullText)) as unknown as ContentOutput
-      }
+      )
 
       // Normalize static post channels to the shape StaticPostOutput expects.
       // Other channel types (carousel, story, reel, whatsapp…) are untouched.

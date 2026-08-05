@@ -1,4 +1,5 @@
 'use client'
+import { parseStream, type SSEEvent } from '@/lib/sse/parse-stream'
 
 import { useState, useRef, useEffect, useCallback } from 'react'
 import Link from 'next/link'
@@ -174,46 +175,20 @@ export function MarketingCopilot({
     setError(null)
 
     try {
-      const response = await fetch('/api/ai/copilot', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ modo, params }),
-        signal: controller.signal,
-      })
-
-      if (!response.ok) throw new Error(`Error ${response.status}`)
-
-      const reader = response.body!.getReader()
-      const decoder = new TextDecoder()
       let accumulated = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-
-        const chunk = decoder.decode(value, { stream: true })
-        const lines = chunk.split('\n')
-
-        for (const line of lines) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6)
-          if (data === '[DONE]') break
-
-          try {
-            const parsed = JSON.parse(data) as { text?: string; error?: string; done?: boolean }
-            if (parsed.error) throw new Error(parsed.error)
-            if (parsed.text) {
-              accumulated += parsed.text
-              setStreamContent(accumulated)
-            }
-          } catch (e) {
-            if (e instanceof SyntaxError) continue
-            throw e
-          }
+      await parseStream(
+        '/api/ai/copilot',
+        { modo, params },
+        {
+          signal: controller.signal,
+          onChunk: (chunk: string) => {
+            accumulated += chunk
+            setStreamContent(accumulated)
+          },
+          onDone: (_evt: SSEEvent) => { setFullContent(accumulated) },
+          onError: (msg: string) => { throw new Error(msg) },
         }
-      }
-
-      setFullContent(accumulated)
+      )
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') return
       setError(err instanceof Error ? err.message : 'Error al generar el análisis')
@@ -251,42 +226,25 @@ export function MarketingCopilot({
     setError(null)
 
     try {
-      const response = await fetch('/api/ai/copilot', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          modo: 'chat',
-          params: { pregunta: msg },
-          conversacion: updatedMessages,
-        }),
-      })
-
-      if (!response.ok) throw new Error(`Error ${response.status}`)
-
-      const reader = response.body!.getReader()
-      const decoder = new TextDecoder()
       let accumulated = ''
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const chunk = decoder.decode(value, { stream: true })
-        for (const line of chunk.split('\n')) {
-          if (!line.startsWith('data: ')) continue
-          const data = line.slice(6)
-          if (data === '[DONE]') break
-          try {
-            const parsed = JSON.parse(data) as { text?: string }
-            if (parsed.text) { accumulated += parsed.text; setStreamContent(accumulated) }
-          } catch { continue }
+      await parseStream(
+        '/api/ai/copilot',
+        { modo: 'chat', params: { pregunta: msg }, conversacion: updatedMessages },
+        {
+          onChunk: (chunk: string) => {
+            accumulated += chunk
+            setStreamContent(accumulated)
+          },
+          onDone: (_evt: SSEEvent) => {
+            setChatMessages([
+              ...updatedMessages,
+              { role: 'assistant', content: accumulated, timestamp: new Date().toISOString() },
+            ])
+            setStreamContent('')
+          },
+          onError: (errMsg: string) => { throw new Error(errMsg) },
         }
-      }
-
-      setChatMessages([
-        ...updatedMessages,
-        { role: 'assistant', content: accumulated, timestamp: new Date().toISOString() },
-      ])
-      setStreamContent('')
+      )
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Error')
     } finally {

@@ -1,5 +1,7 @@
 'use client'
 
+import { parseStream } from '@/lib/sse/parse-stream'
+
 import { useState, useRef } from 'react'
 import { saveObjectionAction, saveObjectionFeedback } from '@/lib/objection-ai/actions'
 import type { ObjecionAnalisis, ObjecionAngulo, ObjecionTipo, CanalObjecion } from '@/types/database'
@@ -172,48 +174,25 @@ export function ObjectionAI({ agentName }: ObjectionAIProps) {
     setCopiedAngulo(null)
 
     try {
-      const res = await fetch('/api/ai/objection', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ objecion, producto, canal, contexto }),
-        signal: abortRef.current.signal,
-      })
-
-      if (!res.ok) {
-        const data = await res.json() as { error?: string }
-        setError(data.error ?? 'Error al analizar la objeción')
-        return
-      }
-
-      const reader = res.body!.getReader()
-      const decoder = new TextDecoder()
-
-      while (true) {
-        const { done, value } = await reader.read()
-        if (done) break
-        const chunk = decoder.decode(value)
-        const lines = chunk.split('\n').filter(l => l.startsWith('data: '))
-        for (const line of lines) {
-          const raw = line.slice(6)
-          if (raw === '[DONE]') break
-          try {
-            const msg = JSON.parse(raw) as {
-              text?: string
-              done?: boolean
-              analisis?: ObjecionAnalisis
-              response_id?: string
-              error?: string
+      await parseStream(
+        '/api/ai/objection',
+        { objecion, producto, canal, contexto },
+        {
+          signal: abortRef.current.signal,
+          onChunk: (chunk) => { setStreamText(prev => prev + chunk) },
+          onDone: (evt) => {
+            const analisis = evt.analisis as ObjecionAnalisis | undefined
+            const responseId = evt.response_id as string | undefined
+            if (analisis) {
+              setAnalisis(analisis)
+              setResponseId(responseId ?? null)
+            } else {
+              setError('No se pudo procesar el análisis. Intenta de nuevo.')
             }
-            if (msg.text) setStreamText(prev => prev + msg.text)
-            if (msg.done) {
-              setAnalisis(msg.analisis ?? null)
-              setResponseId(msg.response_id ?? null)
-              if (msg.error) setError('Error al procesar el análisis')
-            }
-            if (msg.error) setError(msg.error)
-          } catch { /* ignore malformed chunk */ }
+          },
+          onError: (msg) => { setError(msg) },
         }
-      }
+      )
     } catch (err) {
       if (err instanceof Error && err.name !== 'AbortError') {
         setError('Error de conexión. Intenta de nuevo.')
