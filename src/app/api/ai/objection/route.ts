@@ -69,6 +69,43 @@ const complianceByProduct: Record<string, string> = {
   life: 'COMPLIANCE: Es un seguro de vida (beneficio por fallecimiento) — no una cuenta de ahorro.',
 }
 
+
+// Stack-based JSON extractor: finds the largest valid JSON object in text
+// that may contain markdown fences, preamble, or postamble.
+function extractJsonFromFullText(text: string): Record<string, unknown> | null {
+  // Step 1: if fenced block exists, prefer its contents
+  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  const source = fenceMatch?.[1]?.trim() ?? text
+
+  // Step 2: find the longest parseable JSON object via brace tracking
+  let candidate: string | null = null
+  for (let si = 0; si < source.length; si++) {
+    if (source[si] !== '{') continue
+    let depth = 0, inStr = false, esc = false
+    for (let i = si; i < source.length; i++) {
+      const ch = source[i]
+      if (esc)        { esc = false; continue }
+      if (ch === '\\') { esc = true;  continue }
+      if (ch === '"') { inStr = !inStr; continue }
+      if (inStr)      continue
+      if (ch === '{') depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          const s = source.slice(si, i + 1)
+          if (s.length > (candidate?.length ?? 0)) {
+            try { JSON.parse(s); candidate = s } catch { /* invalid at this position */ }
+          }
+          break
+        }
+      }
+    }
+  }
+
+  if (!candidate) return null
+  return JSON.parse(candidate) as Record<string, unknown>
+}
+
 export async function POST(request: NextRequest) {
   const supabase = await createClient()
   const { data: { user } } = await supabase.auth.getUser()
@@ -165,23 +202,14 @@ export async function POST(request: NextRequest) {
           }
         }
 
-        // Parse analysis
+        // Parse analysis using stack-based JSON extractor.
+        // Handles: fenced blocks, preamble text, postamble text, nested objects.
+        // Much more robust than regex strip + JSON.parse on the full string.
         let analisis: ObjecionAnalisis | null = null
         try {
-          const clean = fullText.replace(/^```json\n?/, '').replace(/\n?```$/, '').trim()
-          analisis = JSON.parse(clean) as ObjecionAnalisis
+          analisis = extractJsonFromFullText(fullText) as ObjecionAnalisis | null
         } catch {
-          // Auto-fix attempt
-          try {
-            const fix = await anthropic.messages.create({
-              model: 'claude-sonnet-4-6',
-              max_tokens: 2000,
-              system: 'Corrige este JSON malformado. Devuelve SOLO el JSON válido sin texto adicional.',
-              messages: [{ role: 'user', content: `JSON a corregir:\n${fullText}` }],
-            })
-            const fixText = fix.content[0]?.type === 'text' ? fix.content[0].text : ''
-            analisis = JSON.parse(fixText) as ObjecionAnalisis
-          } catch { /* fails silently */ }
+          analisis = null
         }
 
         // Log usage
