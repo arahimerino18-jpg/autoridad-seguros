@@ -234,7 +234,8 @@ export function ObjectionAI({ agentName }: ObjectionAIProps) {
           },
           onDone: (evt) => {
             const responseId = evt.response_id as string | undefined
-            const serverAnalisis = evt.analisis as ObjecionAnalisis | null | undefined
+            // Accept both 'analisis' (current route) and 'analysis' (legacy route)
+            const serverAnalisis = (evt.analisis ?? evt.analysis) as ObjecionAnalisis | null | undefined
 
             // Primary: server parsed JSON and included it in the done event
             if (serverAnalisis) {
