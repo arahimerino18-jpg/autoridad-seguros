@@ -4,7 +4,7 @@ import { parseStream } from '@/lib/sse/parse-stream'
 
 import { useState, useRef } from 'react'
 import { saveObjectionAction, saveObjectionFeedback } from '@/lib/objection-ai/actions'
-import type { ObjecionAnalisis, ObjecionAngulo, ObjecionTipo, CanalObjecion } from '@/types/database'
+import type { ObjecionAnalisis, ObjecionAngulo, CanalObjecion } from '@/types/database'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -31,7 +31,7 @@ const CANALES: { value: Canal; label: string }[] = [
   { value: 'otro', label: 'Otro' },
 ]
 
-const TIPO_LABELS: Record<ObjecionTipo, { emoji: string; label: string; color: string }> = {
+const TIPO_LABELS: Record<string, { emoji: string; label: string; color: string }> = {
   precio:     { emoji: '💰', label: 'Precio / Costo',     color: 'bg-amber-50 text-amber-800 border-amber-200' },
   tiempo:     { emoji: '⏰', label: 'Tiempo / Ocupado',   color: 'bg-blue-50 text-blue-800 border-blue-200' },
   confianza:  { emoji: '🤝', label: 'Confianza / Duda',   color: 'bg-purple-50 text-purple-800 border-purple-200' },
@@ -40,7 +40,7 @@ const TIPO_LABELS: Record<ObjecionTipo, { emoji: string; label: string; color: s
   otro:       { emoji: '💬', label: 'Otra razón',         color: 'bg-gray-50 text-gray-700 border-gray-200' },
 }
 
-const RESISTENCIA_CONFIG = {
+const RESISTENCIA_CONFIG: Record<string, { color: string; label: string }> = {
   baja:  { color: 'text-green-600 bg-green-50',  label: 'Resistencia baja' },
   media: { color: 'text-amber-600 bg-amber-50',  label: 'Resistencia media' },
   alta:  { color: 'text-red-600 bg-red-50',       label: 'Resistencia alta' },
@@ -53,6 +53,15 @@ const ANGULO_CONFIG: Record<string, { icon: string; color: string }> = {
   historia:       { icon: '💬', color: 'border-teal-200 bg-teal-50/30' },
   acuerdo:        { icon: '✅', color: 'border-emerald-200 bg-emerald-50/30' },
 }
+
+// Safe accessors — return a fallback when the model emits an unexpected value
+const TIPO_FALLBACK   = { emoji: '💬', label: 'Otro', color: 'bg-gray-50 text-gray-700 border-gray-200' }
+const RESIST_FALLBACK = { color: 'text-gray-600 bg-gray-50', label: 'Resistencia' }
+const ANGULO_FALLBACK = { icon: '💡', color: 'border-gray-200 bg-gray-50/30' }
+
+function getTipo(tipo: string | undefined)       { return TIPO_LABELS[tipo ?? '']        ?? TIPO_FALLBACK }
+function getResistencia(nivel: string | undefined){ return RESISTENCIA_CONFIG[nivel ?? ''] ?? RESIST_FALLBACK }
+function getAngulo(angulo: string | undefined)    { return ANGULO_CONFIG[angulo ?? '']     ?? ANGULO_FALLBACK }
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
@@ -68,7 +77,7 @@ function AnguloCard({
   onCopy: (angulo: string) => void
 }) {
   const [copied, setCopied] = useState(false)
-  const config = ANGULO_CONFIG[angulo.angulo] ?? { icon: '💡', color: 'border-gray-200 bg-gray-50/30' }
+  const config = getAngulo(angulo.angulo) ?? { icon: '💡', color: 'border-gray-200 bg-gray-50/30' }
   const useWhatsApp = canal === 'whatsapp' || canal === 'messenger'
   const text = useWhatsApp ? angulo.texto_whatsapp : angulo.texto_verbal
 
@@ -389,14 +398,14 @@ export function ObjectionAI({ agentName }: ObjectionAIProps) {
 
             <div className="flex flex-wrap gap-2 mb-4">
               {/* Type badge */}
-              {TIPO_LABELS[analisis.tipo] && (
-                <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold ${TIPO_LABELS[analisis.tipo].color}`}>
-                  {TIPO_LABELS[analisis.tipo].emoji} {TIPO_LABELS[analisis.tipo].label}
+              {(
+                <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full border text-xs font-semibold ${getTipo(analisis.tipo).color}`}>
+                  {getTipo(analisis.tipo).emoji} {getTipo(analisis.tipo).label}
                 </span>
               )}
               {/* Resistance badge */}
-              <span className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold ${RESISTENCIA_CONFIG[analisis.nivel_resistencia].color}`}>
-                ⚡ {RESISTENCIA_CONFIG[analisis.nivel_resistencia].label}
+              <span className={`inline-flex items-center gap-1 px-3 py-1.5 rounded-full text-xs font-semibold ${getResistencia(analisis.nivel_resistencia).color}`}>
+                ⚡ {getResistencia(analisis.nivel_resistencia).label}
               </span>
             </div>
 
