@@ -5,25 +5,6 @@ import { runContentEngine } from '@/lib/content-studio/content-engine'
 import type { EngineParams } from '@/lib/content-studio/content-engine'
 import type { ChannelId } from '@/lib/content-studio/channel-registry'
 
-// ─── JSON extraction helper ──────────────────────────────────────────────────
-// Claude sometimes wraps its JSON output in ```json ... ``` fences or adds
-// preamble text. This function strips fences and extracts the first complete
-// JSON object, so JSON.parse succeeds without a correction round-trip.
-function extractCleanJson(text: string): string {
-  // 1. Strip ```json ... ``` or ``` ... ``` fences
-  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
-  if (fenced?.[1]) return fenced[1].trim()
-
-  // 2. Extract first {...} block (handles preamble/postamble text)
-  const start = text.indexOf('{')
-  const end   = text.lastIndexOf('}')
-  if (start !== -1 && end > start) return text.slice(start, end + 1)
-
-  // 3. No JSON found — return as-is so JSON.parse can produce its own error
-  return text.trim()
-}
-
-
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY! })
 
 function getMaxTokensForChannel(channelId: string): number {
@@ -33,6 +14,44 @@ function getMaxTokensForChannel(channelId: string): number {
     whatsapp: 700, sms: 300,
   }
   return limits[channelId] ?? 1000
+}
+
+// Stack-based JSON extractor.
+// Handles: markdown fences, preamble text, postamble text,
+// and JSON values that contain { or } characters inside strings.
+// Returns the largest valid JSON object found in the text, or null.
+function extractJsonObject(text: string): Record<string, unknown> | null {
+  // Step 1: prefer content inside ```json ... ``` fences
+  const fenced = text.match(/```(?:json)?\s*([\s\S]*?)```/)
+  const source = fenced?.[1]?.trim() ?? text
+
+  let best: string | null = null
+
+  for (let si = 0; si < source.length; si++) {
+    if (source[si] !== '{') continue
+    let depth = 0, inStr = false, esc = false
+    for (let i = si; i < source.length; i++) {
+      const ch = source[i]
+      if (esc)         { esc = false; continue }
+      if (ch === '\\') { esc = true;  continue }
+      if (ch === '"')  { inStr = !inStr; continue }
+      if (inStr)       continue
+      if (ch === '{')  depth++
+      else if (ch === '}') {
+        depth--
+        if (depth === 0) {
+          const candidate = source.slice(si, i + 1)
+          if (candidate.length > (best?.length ?? 0)) {
+            try { JSON.parse(candidate); best = candidate } catch { /* skip */ }
+          }
+          break
+        }
+      }
+    }
+  }
+
+  if (!best) return null
+  return JSON.parse(best) as Record<string, unknown>
 }
 
 export async function POST(request: NextRequest) {
@@ -106,22 +125,6 @@ export async function POST(request: NextRequest) {
 
   // ── Generate or Modify (streaming SSE) ───────────────────────────────────
   if (action === 'generate' || action === 'modify') {
-    console.log('[content-studio] action=', action, 'params keys=', Object.keys(params))
-
-    // Validate required fields before hitting the engine — prevents silent empty stream
-    if (action === 'generate') {
-      const missing: string[] = []
-      if (!params.channelId) missing.push('channelId')
-      if (!params.producto)  missing.push('producto')
-      if (!params.objetivo)  missing.push('objetivo')
-      if (missing.length > 0) {
-        console.error('[content-studio] missing required params:', missing, 'received:', params)
-        return NextResponse.json({
-          error: `Parámetros faltantes: ${missing.join(', ')}. Revisa el payload.`
-        }, { status: 400 })
-      }
-    }
-
     // Check content_studio usage limit
     const limit = await checkUsageLimit(user.id, 'content_studio', supabase)
     if (!limit.allowed) {
@@ -158,33 +161,32 @@ export async function POST(request: NextRequest) {
     const stream = new ReadableStream({
       async start(controller) {
         try {
-          console.log('[content-studio] stream starting, channelId=', params.channelId, 'userId=', user.id)
-          let chunkCount = 0
           for await (const chunk of runContentEngine(engineParams)) {
             fullOutput += chunk
-            chunkCount++
-            if (chunkCount === 1) console.log('[content-studio] first chunk received, length=', chunk.length)
             controller.enqueue(
               encoder.encode(`data: ${JSON.stringify({ text: chunk })}\n\n`)
             )
           }
-          console.log('[content-studio] stream complete, total chunks=', chunkCount, 'output length=', fullOutput.length)
 
           // Log usage after successful generation
           await logUsage(user.id, 'content_studio', supabase)
 
-          // Strip markdown fences and extract JSON before parsing.
-          // Claude sometimes wraps output in ```json ... ``` or adds
-          // preamble text — extractCleanJson handles all these cases so
-          // JSON.parse succeeds without a correction round-trip.
+          // Extract and parse JSON from the accumulated output.
+          // Uses a stack-based extractor that:
+          //   1. Prefers content inside ```json ... ``` fences
+          //   2. Tries every { as a potential start position
+          //   3. Tracks brace depth respecting string boundaries
+          //   4. Keeps the longest valid JSON object found
+          // This handles preamble text, postamble, and values containing { or }
+          // inside strings — all cases where indexOf/lastIndexOf fails.
           let parsedOutput: Record<string, unknown> | null = null
           let jsonFailed = false
 
           try {
-            parsedOutput = JSON.parse(extractCleanJson(fullOutput)) as Record<string, unknown>
+            parsedOutput = extractJsonObject(fullOutput)
+            if (!parsedOutput) throw new Error('no JSON object found')
           } catch {
-            // extractCleanJson did not find valid JSON — attempt a silent
-            // correction call to Claude as a last resort.
+            // Stack-based extraction failed — attempt one correction call
             try {
               const correctionResponse = await anthropic.messages.create({
                 model: 'claude-sonnet-4-6',
@@ -198,9 +200,9 @@ export async function POST(request: NextRequest) {
               const correctedText = correctionResponse.content[0]?.type === 'text'
                 ? correctionResponse.content[0].text.trim()
                 : ''
-              parsedOutput = JSON.parse(extractCleanJson(correctedText)) as Record<string, unknown>
+              parsedOutput = extractJsonObject(correctedText)
+              if (!parsedOutput) throw new Error('correction produced no JSON')
             } catch {
-              // Both attempts failed — send raw text with degraded flag
               jsonFailed = true
             }
           }
@@ -218,17 +220,9 @@ export async function POST(request: NextRequest) {
           controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         } catch (err) {
           const message = err instanceof Error ? err.message : 'Error al generar contenido'
-          console.error('[content-studio] stream error:', {
-            message,
-            stack: err instanceof Error ? err.stack?.slice(0, 300) : undefined,
-            channelId: params.channelId,
-            action,
-          })
-          // Always emit the error as a visible SSE event — never return 200 with empty stream
           controller.enqueue(
-            encoder.encode(`data: ${JSON.stringify({ error: message, fatal: true })}\n\n`)
+            encoder.encode(`data: ${JSON.stringify({ error: message })}\n\n`)
           )
-          controller.enqueue(encoder.encode('data: [DONE]\n\n'))
         } finally {
           controller.close()
         }
