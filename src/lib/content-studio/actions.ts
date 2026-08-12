@@ -29,26 +29,50 @@ export async function saveContentAction(
   // Use unknown cast to avoid ContentOutput → Record inference issue
   const outputObj = params.output as unknown as Record<string, unknown>
 
+  // Map incoming objetivo value to the content_goal enum accepted by the DB.
+  // The UI sends Spanish values ('educar', 'conectar', etc.); the enum only
+  // accepts English ('educate', 'connect', 'convert', 'retain', 'referral').
+  const objetivoMap: Record<string, string> = {
+    educar:   'educate',
+    conectar: 'connect',
+    convertir:'convert',
+    retener:  'retain',
+    referido: 'referral',
+    educate:  'educate',
+    connect:  'connect',
+    convert:  'convert',
+    retain:   'retain',
+    referral: 'referral',
+  }
+  const objetivoDb = objetivoMap[params.objetivo] ?? 'educate'
+
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data, error } = await (supabase.from('contenidos') as any).insert({
     user_id: user.id,
     tipo,
     plataforma,
     producto: params.producto,
-    objetivo: params.objetivo,
+    objetivo: objetivoDb,             // mapped to content_goal enum value
     titulo: params.tema.slice(0, 100),
     cuerpo,
     status: 'draft',
     compliance_revisado: !!params.compliance_nivel,
     tono_generacion: null,
     instruccion_extra: params.instruccion_extra ?? null,
-    // Phase 7: store full structured output for library preview replay
-    output_json: params.output as unknown as Record<string, unknown>,
+    // output_json removed: column does not exist in public.contenidos
     slides_json: 'slides' in outputObj ? outputObj.slides : null,
     segmentos_json: 'segmentos' in outputObj ? outputObj.segmentos : null,
   }).select('id').single()
 
-  if (error) return { success: false, error: 'Error al guardar el contenido.' }
+  if (error) {
+    console.error('[saveContentAction] Supabase error', {
+      code:    (error as { code?: string }).code,
+      message: error.message,
+      details: (error as { details?: string }).details,
+      hint:    (error as { hint?: string }).hint,
+    })
+    return { success: false, error: 'Error al guardar el contenido.' }
+  }
 
   const saved = data as { id: string }
 
