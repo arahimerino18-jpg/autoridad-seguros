@@ -42,16 +42,16 @@ export default async function BibliotecaPage({
   if (params.publicado === 'true') query = query.eq('fue_publicado', true)
 
   const { data: contenidos, count, error: queryError } = await query
-  console.error('[BibliotecaPage] SELECT diagnostic', {
-    count,
-    length: contenidos?.length ?? null,
-    error: queryError ? {
-      code:    queryError.code,
-      message: queryError.message,
-      details: (queryError as { details?: string }).details ?? null,
-      hint:    (queryError as { hint?: string }).hint    ?? null,
-    } : null,
-  })
+  const _qErr = queryError as { code?: string; message?: string; details?: string; hint?: string } | null
+  console.error(
+    '[BibliotecaPage] SELECT diagnostic' +
+    ' count=' + String(count) +
+    ' length=' + String(contenidos?.length ?? null) +
+    ' code=' + String(_qErr?.code ?? null) +
+    ' message=' + String(_qErr?.message ?? null) +
+    ' details=' + String(_qErr?.details ?? null) +
+    ' hint=' + String(_qErr?.hint ?? null)
+  )
 
   // Load agent handle for previews
   const { data: bkData } = await supabase
