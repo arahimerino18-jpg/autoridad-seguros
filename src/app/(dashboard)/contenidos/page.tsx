@@ -31,7 +31,7 @@ export default async function BibliotecaPage({
   // Build query with filters
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let query = (supabase.from('contenidos') as any)
-    .select('id, tipo, plataforma, producto, titulo, cuerpo, output_json, compliance_revisado, fue_publicado, canal_publicacion, created_at, growth_output_id', { count: 'exact' })
+    .select('id, tipo, plataforma, producto, titulo, cuerpo, output_json, compliance_revisado, fue_publicado, canal_publicacion, created_at', { count: 'exact' })
     .eq('user_id', user.id)
     .is('deleted_at', null)
     .order('created_at', { ascending: false })
@@ -41,17 +41,7 @@ export default async function BibliotecaPage({
   if (params.producto) query = query.eq('producto', params.producto)
   if (params.publicado === 'true') query = query.eq('fue_publicado', true)
 
-  const { data: contenidos, count, error: queryError } = await query
-  const _qErr = queryError as { code?: string; message?: string; details?: string; hint?: string } | null
-  console.error(
-    '[BibliotecaPage] SELECT diagnostic' +
-    ' count=' + String(count) +
-    ' length=' + String(contenidos?.length ?? null) +
-    ' code=' + String(_qErr?.code ?? null) +
-    ' message=' + String(_qErr?.message ?? null) +
-    ' details=' + String(_qErr?.details ?? null) +
-    ' hint=' + String(_qErr?.hint ?? null)
-  )
+  const { data: contenidos, count } = await query
 
   // Load agent handle for previews
   const { data: bkData } = await supabase

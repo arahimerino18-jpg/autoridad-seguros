@@ -100,7 +100,7 @@ export async function adaptContentAction(
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const { data } = await (supabase.from('contenidos') as any)
-    .select('titulo, producto, objetivo, cuerpo, growth_output_id')
+    .select('titulo, producto, objetivo, cuerpo')
     .eq('id', contenidoId)
     .eq('user_id', user.id)
     .single()
